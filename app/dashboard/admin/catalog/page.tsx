@@ -1,0 +1,140 @@
+import { redirect } from "next/navigation";
+import { createClient } from "@/lib/supabase/server";
+import { isAdmin } from "@/lib/auth";
+import SectionHeader from "../../_components/SectionHeader";
+import CatalogManager from "./CatalogManager";
+import type { MaterialRow, RecipeRow, VendorRow } from "./types";
+
+export const dynamic = "force-dynamic";
+
+export default async function CatalogPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ tab?: string }>;
+}) {
+  if (!(await isAdmin())) redirect("/dashboard");
+
+  const sp = await searchParams;
+  const initialTab = sp.tab === "recipes" ? "recipes" : "materials";
+  const title =
+    initialTab === "recipes" ? "Recipe Builder" : "Raw Materials Catalog";
+  const description =
+    initialTab === "recipes"
+      ? "Build dishes and sub-recipes — ingredient costs and margins compute automatically."
+      : "Create and manage the raw materials the rest of the system depends on.";
+
+  const supabase = await createClient();
+  const { data: homeLoc } = await supabase.rpc("current_location_id");
+
+  const [vendorRes, matRes, recipeRes, wacRes, locRes, deptRes] =
+    await Promise.all([
+    supabase
+      .from("vendors")
+      .select(
+        "id, vendor_code, name, contact_person, phone, email, bank_name, account_number, ifsc_code, status",
+      )
+      .order("name"),
+    supabase
+      .from("raw_materials")
+      .select(
+        "id, name, brand, purchase_unit, stock_unit, conversion_factor, par_level, category, vendor_id, needs_review, vendors ( name )",
+      )
+      .order("name"),
+    supabase
+      .from("recipes")
+      .select(
+        "id, name, selling_price, yield_portions, overhead_percentage, category, recipe_ingredients!recipe_id ( count )",
+      )
+      .order("name"),
+    supabase
+      .from("weighted_average_cost")
+      .select("raw_material_id, weighted_avg_cost"),
+    // The caller's own location (RLS-scoped) → its Google Sheet id.
+    supabase.from("locations").select("google_spreadsheet_id").maybeSingle(),
+    supabase
+      .from("departments")
+      .select("id, name")
+      .eq("location_id", (homeLoc as string | null) ?? "")
+      .order("name"),
+  ]);
+
+  const departments = (deptRes.data ?? []) as { id: number; name: string }[];
+
+  // Single location workspace sheet (configured once in Settings).
+  const spreadsheetId = locRes.data?.google_spreadsheet_id ?? null;
+  const connected = Boolean(spreadsheetId);
+  const sheetUrl = spreadsheetId
+    ? `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`
+    : "";
+
+  const vendors = (vendorRes.data ?? []) as VendorRow[];
+
+  const wacByMaterial = new Map<string, number>();
+  for (const row of wacRes.data ?? []) {
+    wacByMaterial.set(row.raw_material_id, Number(row.weighted_avg_cost ?? 0));
+  }
+
+  const materials: MaterialRow[] = (matRes.data ?? []).map((m) => {
+    const vendor = m.vendors as unknown as { name: string } | null;
+    return {
+      id: m.id,
+      name: m.name,
+      brand: m.brand,
+      purchase_unit: m.purchase_unit,
+      stock_unit: m.stock_unit,
+      conversion_factor: Number(m.conversion_factor),
+      par_level: Number(m.par_level),
+      category: m.category,
+      vendor_id: m.vendor_id,
+      vendor_name: vendor?.name ?? null,
+      weighted_avg_cost: wacByMaterial.get(m.id) ?? 0,
+      needs_review: Boolean(m.needs_review),
+    };
+  });
+
+  const recipes: RecipeRow[] = (recipeRes.data ?? []).map((r) => {
+    // PostgREST returns an aggregate relation as [{ count: n }].
+    const agg = r.recipe_ingredients as unknown as { count: number }[];
+    return {
+      id: r.id,
+      name: r.name,
+      selling_price: Number(r.selling_price),
+      ingredient_count: agg?.[0]?.count ?? 0,
+      category: r.category,
+      yield_portions: Number(r.yield_portions ?? 1),
+      overhead_percentage: Number(r.overhead_percentage ?? 0),
+    };
+  });
+
+  const loadError =
+    vendorRes.error || matRes.error || recipeRes.error || wacRes.error;
+
+  return (
+    <div>
+      <div className="mb-6 flex items-center gap-2 text-sm text-neutral-500">
+        <span>Master Data</span>
+        <span>/</span>
+        <span className="text-neutral-700">{title}</span>
+      </div>
+
+      <SectionHeader eyebrow="Master Data" title={title} description={description} />
+
+      {loadError && (
+        <p className="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+          Couldn&apos;t load some data: {loadError.message}.
+        </p>
+      )}
+
+      <CatalogManager
+        key={initialTab}
+        initialTab={initialTab}
+        vendors={vendors}
+        materials={materials}
+        recipes={recipes}
+        departments={departments}
+        sheetUrl={sheetUrl}
+        connected={connected}
+      />
+    </div>
+  );
+}
