@@ -112,7 +112,13 @@ export async function createTenant(
       email: ownerEmail,
       options: { redirectTo: `${siteUrl()}/auth/set-password` },
     });
-    inviteLink = linkData?.properties?.action_link ?? null;
+    // Route through OUR /auth/confirm so the session is established as a cookie
+    // server-side (robust vs #hash-fragment loss across redirects / PKCE), which
+    // then lands on /auth/set-password. Falls back to the raw link if needed.
+    const hashedToken = linkData?.properties?.hashed_token;
+    inviteLink = hashedToken
+      ? `${siteUrl()}/auth/confirm?token_hash=${hashedToken}&type=recovery&next=/auth/set-password`
+      : (linkData?.properties?.action_link ?? null);
   } catch (e) {
     // Any failure (returned error OR thrown) rolls back the partial tenant.
     if (createdUserId) {
@@ -260,7 +266,12 @@ export async function generateInviteLink(
   });
   if (error) return { error: error.message };
 
-  const link = data.properties?.action_link;
+  // Route through /auth/confirm (cookie set server-side) → /auth/set-password,
+  // robust vs hash-fragment loss / PKCE. Fall back to the raw link if missing.
+  const hashedToken = data.properties?.hashed_token;
+  const link = hashedToken
+    ? `${siteUrl()}/auth/confirm?token_hash=${hashedToken}&type=recovery&next=/auth/set-password`
+    : data.properties?.action_link;
   if (!link) return { error: "Could not generate a link." };
   return { link };
 }
