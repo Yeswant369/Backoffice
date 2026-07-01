@@ -208,6 +208,11 @@ export const ADMIN_NAV: AdminNavGroup[] = [
         icon: "M12 1v22|M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6|M5 9h.01",
       },
       {
+        href: "/dashboard/admin/analytics/pos",
+        label: "POS Sales",
+        icon: "M3 3h18v4H3z|M3 7v13a1 1 0 001 1h16a1 1 0 001-1V7|M8 11h8|M8 15h5",
+      },
+      {
         href: "/dashboard/admin/anomalies",
         label: "Anomalies",
         icon: "M10.29 3.86l-8.4 14.55A1 1 0 002.76 20h18.48a1 1 0 00.87-1.5L13.71 3.86a1 1 0 00-1.74 0z|M12 9v4|M12 17h.01",

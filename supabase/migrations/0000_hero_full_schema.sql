@@ -36,6 +36,12 @@ create table if not exists public.locations (
   name                  varchar(255) not null,
   google_spreadsheet_id text,
   pos_webhook_secret    text,            -- per-tenant Petpooja webhook secret
+  petpooja_rest_id      text,            -- Petpooja Get-Orders mapping code (per outlet)
+  pos_commissions       jsonb       not null default '{}'::jsonb,  -- {"Swiggy":25,"Zomato":22}
+  pos_last_synced_at    timestamptz,
+  petpooja_app_key      text,            -- per-outlet Petpooja creds (SECRET — no authenticated grant)
+  petpooja_app_secret   text,
+  petpooja_access_token text,
   created_at            timestamptz not null default now()
 );
 create index if not exists idx_locations_org on public.locations (organization_id);
@@ -360,6 +366,37 @@ create index if not exists idx_pos_sales_location  on public.pos_sales (location
 create index if not exists idx_pos_sales_recipe     on public.pos_sales (recipe_id);
 create index if not exists idx_pos_sales_loc_soldat on public.pos_sales (location_id, sold_at desc);
 
+-- pos_orders — one row per Petpooja order (financial + channel facts; the line
+-- items live in pos_sales). Populated by the daily PULL (lib/pos/petpooja-pull).
+create table if not exists public.pos_orders (
+  id                  uuid        primary key default gen_random_uuid(),
+  location_id         uuid        not null references public.locations (id) on delete cascade,
+  order_key           text        not null,  -- ${order_date}#${orderID}: stable across re-pulls
+  pos_order_id        text,
+  ref_id              text,
+  online_order_id     text,
+  order_type          text,                  -- Delivery / Dine In / Pick Up
+  channel             text,                  -- order_from: Swiggy / Zomato / POS
+  sub_order_type      text,
+  payment_type        text,                  -- Online / Cash / UPI / Card ...
+  custom_payment_type text,
+  gross_amount        numeric(14,2) not null default 0,
+  discount_amount     numeric(14,2) not null default 0,
+  tax_amount          numeric(14,2) not null default 0,  -- GST
+  round_off           numeric(14,2) not null default 0,
+  net_amount          numeric(14,2) not null default 0,
+  status              text,
+  sold_at             timestamptz,
+  order_date          date,
+  raw_payload         jsonb,
+  created_at          timestamptz not null default now(),
+  constraint uq_pos_orders unique (location_id, order_key)
+);
+create index if not exists idx_pos_orders_loc_date   on public.pos_orders (location_id, order_date);
+create index if not exists idx_pos_orders_loc_soldat on public.pos_orders (location_id, sold_at);
+-- RLS enable + policy for pos_orders is in SECTION 4 (after current_location_ids
+-- is defined, which the policy references).
+
 -- =============================================================================
 -- SECTION 4: TENANT HELPER FUNCTIONS (SECURITY DEFINER → no RLS recursion)
 -- =============================================================================
@@ -447,6 +484,78 @@ $$;
 grant execute on function public.is_owner()                       to authenticated;
 grant execute on function public.can_manage_org()                 to authenticated;
 grant execute on function public.current_location_ids()           to authenticated;
+
+-- set_pos_config — admin-only writer for the outlet's Petpooja restID +
+-- per-platform commissions (avoids a broad UPDATE grant on locations).
+create or replace function public.set_pos_config(p_rest_id text, p_commissions jsonb)
+returns void language plpgsql security definer set search_path = public as $$
+declare home uuid;
+begin
+  if not exists (
+    select 1 from public.profiles
+     where id = auth.uid() and (1 = any(roles) or 6 = any(roles))
+  ) then
+    raise exception 'Only administrators can change POS configuration';
+  end if;
+  home := public.current_location_id();
+  if home is null then raise exception 'No home location for this account'; end if;
+  update public.locations
+     set petpooja_rest_id = nullif(btrim(p_rest_id), ''),
+         pos_commissions  = coalesce(p_commissions, '{}'::jsonb)
+   where id = home;
+end $$;
+revoke all on function public.set_pos_config(text, jsonb) from public;
+grant execute on function public.set_pos_config(text, jsonb) to authenticated;
+
+-- Per-outlet Petpooja creds vault. Secret columns (no authenticated grant);
+-- written via this admin-only setter (blank field keeps the stored value), and
+-- the UI can read only a boolean "configured" status, never the values.
+create or replace function public.set_pos_creds(
+  p_app_key text, p_app_secret text, p_access_token text)
+returns void language plpgsql security definer set search_path = public as $$
+declare home uuid;
+begin
+  if not exists (
+    select 1 from public.profiles
+     where id = auth.uid() and (1 = any(roles) or 6 = any(roles))
+  ) then
+    raise exception 'Only administrators can change POS credentials';
+  end if;
+  home := public.current_location_id();
+  if home is null then raise exception 'No home location for this account'; end if;
+  update public.locations set
+    petpooja_app_key      = coalesce(nullif(btrim(p_app_key), ''),      petpooja_app_key),
+    petpooja_app_secret   = coalesce(nullif(btrim(p_app_secret), ''),   petpooja_app_secret),
+    petpooja_access_token = coalesce(nullif(btrim(p_access_token), ''), petpooja_access_token)
+  where id = home;
+end $$;
+revoke all on function public.set_pos_creds(text, text, text) from public;
+grant execute on function public.set_pos_creds(text, text, text) to authenticated;
+
+create or replace function public.pos_has_location_creds()
+returns boolean language sql security definer set search_path = public stable as $$
+  select exists (
+    select 1 from public.locations
+     where id = public.current_location_id()
+       and petpooja_app_key is not null
+       and petpooja_app_secret is not null
+       and petpooja_access_token is not null
+  );
+$$;
+revoke all on function public.pos_has_location_creds() from public;
+grant execute on function public.pos_has_location_creds() to authenticated;
+
+-- pos_orders RLS (here, not with the table def, because the policy references
+-- current_location_ids() which is defined just above).
+alter table public.pos_orders enable row level security;
+drop policy if exists pos_orders_select on public.pos_orders;
+create policy pos_orders_select on public.pos_orders for select to authenticated
+  using (location_id in (select public.current_location_ids()));
+
+-- Two outlets must not claim the same Petpooja store (shared company creds +
+-- duplicate restID would cross-ingest another restaurant's orders).
+create unique index if not exists uq_locations_petpooja_rest_id
+  on public.locations (petpooja_rest_id) where petpooja_rest_id is not null;
 grant execute on function public.current_writable_location_ids()  to authenticated;
 
 -- =============================================================================
@@ -923,6 +1032,50 @@ select
 from cogs c
 full join rev r on c.location_id = r.location_id and c.d = r.d;
 
+-- POS analytics (Petpooja pull). security_invoker → inherit pos_orders RLS.
+create or replace view public.pos_daily_sales with (security_invoker = on) as
+select location_id, order_date,
+       count(*) as orders, sum(gross_amount) as gross, sum(discount_amount) as discount,
+       sum(tax_amount) as gst, sum(net_amount) as net
+  from public.pos_orders where status = 'Success'
+ group by location_id, order_date;
+
+create or replace view public.pos_sales_by_channel with (security_invoker = on) as
+select o.location_id, o.order_date,
+       coalesce(nullif(o.channel, ''), o.order_type, 'Unknown') as channel,
+       count(*) as orders, sum(o.gross_amount) as gross, sum(o.net_amount) as net,
+       sum(o.tax_amount) as gst,
+       round(sum(o.net_amount *
+         (1 - coalesce((l.pos_commissions ->>
+              coalesce(nullif(o.channel, ''), o.order_type, 'Unknown'))::numeric, 0) / 100)), 2) as net_payout
+  from public.pos_orders o
+  join public.locations l on l.id = o.location_id
+ where o.status = 'Success'
+ group by o.location_id, o.order_date,
+          coalesce(nullif(o.channel, ''), o.order_type, 'Unknown'), l.pos_commissions;
+
+create or replace view public.pos_daypart with (security_invoker = on) as
+select location_id, order_date,
+       case when h < 12 then 'Morning' when h < 17 then 'Afternoon'
+            when h < 22 then 'Evening' else 'Night' end as daypart,
+       count(*) as orders, sum(net_amount) as net
+  from (select location_id, order_date, net_amount,
+               extract(hour from (sold_at at time zone 'Asia/Kolkata'))::int as h
+          from public.pos_orders where status = 'Success' and sold_at is not null) t
+ group by location_id, order_date, daypart;
+
+create or replace view public.pos_item_report with (security_invoker = on) as
+select ps.location_id, po.order_date, ps.recipe_id, r.name as item_name, r.category,
+       sum(ps.quantity) as qty_sold,
+       round(sum(ps.quantity) * r.selling_price, 2) as revenue,
+       round(sum(ps.quantity) * public.recipe_cogs(ps.recipe_id), 2) as food_cost,
+       round(sum(ps.quantity) * (r.selling_price - public.recipe_cogs(ps.recipe_id)), 2) as gross_profit
+  from public.pos_sales ps
+  join public.pos_orders po on po.location_id = ps.location_id and po.order_key = ps.order_id
+  join public.recipes r on r.id = ps.recipe_id
+ where po.status = 'Success'
+ group by ps.location_id, po.order_date, ps.recipe_id, r.name, r.category, r.selling_price;
+
 -- =============================================================================
 -- SECTION 8: TRIGGERS
 -- =============================================================================
@@ -1089,8 +1242,11 @@ grant usage on schema public to authenticated;
 
 grant select on public.organizations to authenticated;
 -- locations: SECURITY GATE — no organization_id (tenant) rewrites; no secret reads.
-grant select (id, organization_id, name, google_spreadsheet_id) on public.locations to authenticated;
+grant select (id, organization_id, name, google_spreadsheet_id,
+              petpooja_rest_id, pos_commissions, pos_last_synced_at) on public.locations to authenticated;
 grant update (name, google_spreadsheet_id)                       on public.locations to authenticated;
+grant select on public.pos_orders, public.pos_daily_sales, public.pos_sales_by_channel,
+                public.pos_daypart, public.pos_item_report to authenticated;
 -- profiles: SECURITY GATE — authenticated may edit ONLY full_name (not roles/location_id),
 -- and cannot self-insert/delete (rows are managed by the trigger + auth cascade).
 grant select               on public.profiles to authenticated;
