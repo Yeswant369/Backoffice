@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { createClient } from "@/lib/supabase/server";
 import { normalizeRoles, ROLES, type RoleId } from "@/lib/roles";
 import type { User } from "@supabase/supabase-js";
@@ -7,8 +8,12 @@ import type { User } from "@supabase/supabase-js";
  * truth). Used by Server Components and Server Actions for authorization —
  * Server Actions can be invoked directly, so they must re-check, never trust
  * the Proxy alone.
+ *
+ * Wrapped in React `cache()`: within one server render the getUser() auth call
+ * + profiles query run ONCE and are shared across every guard
+ * (isAdmin/isOwner/hasAnyRole/canManageOrg) and the page — no repeat round-trips.
  */
-export async function getCurrentUserAndRoles(): Promise<{
+export const getCurrentUserAndRoles = cache(async function (): Promise<{
   user: User | null;
   roles: RoleId[];
 }> {
@@ -26,7 +31,7 @@ export async function getCurrentUserAndRoles(): Promise<{
     .single();
 
   return { user, roles: normalizeRoles(profile?.roles) };
-}
+});
 
 /** True when the current user holds the Admin role. */
 export async function isAdmin(): Promise<boolean> {
