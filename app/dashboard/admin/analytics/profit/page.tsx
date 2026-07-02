@@ -4,24 +4,14 @@ import { createClient } from "@/lib/supabase/server";
 import { isAdmin } from "@/lib/auth";
 import { inr } from "@/lib/format";
 import SectionHeader from "@/app/dashboard/_components/SectionHeader";
+import DateRangeUrlControl from "@/app/dashboard/_components/DateRangeUrlControl";
+import { resolveDateRange } from "@/lib/date-range";
 
 export const dynamic = "force-dynamic";
 
-const PERIODS = [7, 30, 90, 365] as const;
 const n = (v: unknown) => Number(v ?? 0);
 const pct = (part: number, whole: number) =>
   whole > 0 ? (part / whole) * 100 : 0;
-
-function istDateNDaysAgo(days: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() - days);
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Kolkata",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(d);
-}
 
 interface PLRow {
   pl_date: string;
@@ -70,14 +60,11 @@ function Card({
 export default async function ProfitPage({
   searchParams,
 }: {
-  searchParams: Promise<{ days?: string }>;
+  searchParams: Promise<{ from?: string; to?: string }>;
 }) {
   if (!(await isAdmin())) redirect("/dashboard");
   const sp = await searchParams;
-  const days = PERIODS.includes(Number(sp.days) as (typeof PERIODS)[number])
-    ? Number(sp.days)
-    : 30;
-  const fromDate = istDateNDaysAgo(days);
+  const { from, to } = resolveDateRange(sp.from, sp.to);
 
   const supabase = await createClient();
   const { data: home } = await supabase.rpc("current_location_id");
@@ -89,7 +76,8 @@ export default async function ProfitPage({
       "pl_date, revenue, items_sold, theoretical_cogs, wastage_cost, variance_cost, actual_cogs",
     )
     .eq("location_id", loc)
-    .gte("pl_date", fromDate)
+    .gte("pl_date", from)
+    .lte("pl_date", to)
     .order("pl_date", { ascending: false });
   const rows = (data ?? []) as PLRow[];
 
@@ -119,27 +107,13 @@ export default async function ProfitPage({
         <span className="text-neutral-700">Cost &amp; Profit</span>
       </div>
 
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-        <SectionHeader
-          eyebrow="Dashboards"
-          title="Cost & Profit"
-          description="Theoretical vs actual food cost. The gap between what recipes say and what stock actually consumed is your wastage + shrinkage leakage."
-        />
-        <div className="flex gap-1 rounded-lg border border-[#e6e0d3] bg-[#f7f3ec] p-1">
-          {PERIODS.map((p) => (
-            <Link
-              key={p}
-              href={`/dashboard/admin/analytics/profit?days=${p}`}
-              className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${
-                days === p
-                  ? "bg-white text-neutral-900 shadow-sm"
-                  : "text-neutral-500 hover:text-neutral-900"
-              }`}
-            >
-              {p}d
-            </Link>
-          ))}
-        </div>
+      <SectionHeader
+        eyebrow="Dashboards"
+        title="Cost & Profit"
+        description="Theoretical vs actual food cost. The gap between what recipes say and what stock actually consumed is your wastage + shrinkage leakage."
+      />
+      <div className="mb-6 mt-4">
+        <DateRangeUrlControl from={from} to={to} />
       </div>
 
       {error && (
@@ -161,7 +135,7 @@ export default async function ProfitPage({
       </p>
 
       <div className="mb-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Card label="Revenue" value={inr(t.revenue)} sub={`${days} days`} />
+        <Card label="Revenue" value={inr(t.revenue)} sub={`${from} → ${to}`} />
         <Card
           label="Theoretical food cost"
           value={`${theoFc.toFixed(1)}%`}

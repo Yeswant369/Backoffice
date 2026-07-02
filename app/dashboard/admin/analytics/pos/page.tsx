@@ -3,18 +3,13 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { isAdmin } from "@/lib/auth";
 import { inr } from "@/lib/format";
+import { resolveDateRange } from "@/lib/date-range";
 import SectionHeader from "../../../_components/SectionHeader";
+import DateRangeUrlControl from "../../../_components/DateRangeUrlControl";
 
 export const dynamic = "force-dynamic";
 
-const PERIODS = [7, 30, 90] as const;
 const n = (v: unknown) => Number(v ?? 0);
-
-function istDaysAgo(days: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() - days);
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(d);
-}
 
 interface DailyRow { order_date: string; orders: number; gross: number; discount: number; gst: number; net: number; }
 interface ChannelRow { channel: string; orders: number; gross: number; net: number; gst: number; net_payout: number; }
@@ -26,24 +21,21 @@ const DAYPART_ORDER = ["Morning", "Afternoon", "Evening", "Night"];
 export default async function PosSalesPage({
   searchParams,
 }: {
-  searchParams: Promise<{ days?: string }>;
+  searchParams: Promise<{ from?: string; to?: string }>;
 }) {
   if (!(await isAdmin())) redirect("/dashboard");
   const sp = await searchParams;
-  const days = PERIODS.includes(Number(sp.days) as (typeof PERIODS)[number])
-    ? Number(sp.days)
-    : 30;
-  const from = istDaysAgo(days);
+  const { from, to } = resolveDateRange(sp.from, sp.to);
 
   const supabase = await createClient();
   const { data: home } = await supabase.rpc("current_location_id");
   const loc = (home as string | null) ?? "";
 
   const [dailyRes, channelRes, daypartRes, itemsRes] = await Promise.all([
-    supabase.from("pos_daily_sales").select("*").eq("location_id", loc).gte("order_date", from).order("order_date"),
-    supabase.from("pos_sales_by_channel").select("*").eq("location_id", loc).gte("order_date", from),
-    supabase.from("pos_daypart").select("*").eq("location_id", loc).gte("order_date", from),
-    supabase.from("pos_item_report").select("*").eq("location_id", loc).gte("order_date", from),
+    supabase.from("pos_daily_sales").select("*").eq("location_id", loc).gte("order_date", from).lte("order_date", to).order("order_date"),
+    supabase.from("pos_sales_by_channel").select("*").eq("location_id", loc).gte("order_date", from).lte("order_date", to),
+    supabase.from("pos_daypart").select("*").eq("location_id", loc).gte("order_date", from).lte("order_date", to),
+    supabase.from("pos_item_report").select("*").eq("location_id", loc).gte("order_date", from).lte("order_date", to),
   ]);
 
   const daily = (dailyRes.data ?? []) as DailyRow[];
@@ -91,23 +83,13 @@ export default async function PosSalesPage({
         <span className="text-neutral-700">POS Sales</span>
       </div>
 
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-        <SectionHeader
-          eyebrow="Dashboards"
-          title="POS Sales"
-          description="Petpooja orders — daily sales, GST, channel mix (Swiggy / Zomato / Dine-in) net of commission, dayparts and item profitability."
-        />
-        <div className="flex gap-1 rounded-lg border border-[#e6e0d3] bg-[#f7f3ec] p-1 text-sm">
-          {PERIODS.map((p) => (
-            <Link
-              key={p}
-              href={`/dashboard/admin/analytics/pos?days=${p}`}
-              className={`rounded-md px-3 py-1.5 ${p === days ? "bg-neutral-900 text-white" : "text-neutral-600 hover:text-neutral-900"}`}
-            >
-              {p}d
-            </Link>
-          ))}
-        </div>
+      <SectionHeader
+        eyebrow="Dashboards"
+        title="POS Sales"
+        description="Petpooja orders — daily sales, GST, channel mix (Swiggy / Zomato / Dine-in) net of commission, dayparts and item profitability."
+      />
+      <div className="mb-6 mt-4">
+        <DateRangeUrlControl from={from} to={to} />
       </div>
 
       {empty ? (

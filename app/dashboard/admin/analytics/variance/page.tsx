@@ -9,22 +9,12 @@ import KpiCard from "@/app/dashboard/_components/KpiCard";
 import GroupedBarCard from "@/app/dashboard/_components/GroupedBarCard";
 import { CHART } from "@/app/dashboard/_components/accents";
 import VarianceChart, { type CategoryCost } from "./VarianceChart";
+import DateRangeUrlControl from "@/app/dashboard/_components/DateRangeUrlControl";
+import { resolveDateRange } from "@/lib/date-range";
 
 export const dynamic = "force-dynamic";
 
-const PERIODS = [7, 30, 90, 365] as const;
 const n = (v: unknown) => Number(v ?? 0);
-
-function istDateNDaysAgo(days: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() - days);
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Kolkata",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(d);
-}
 
 interface VarianceRow {
   count_date: string;
@@ -56,16 +46,14 @@ const IcAlert = (
 export default async function VariancePage({
   searchParams,
 }: {
-  searchParams: Promise<{ days?: string }>;
+  searchParams: Promise<{ from?: string; to?: string }>;
 }) {
   if (!(await isAdmin())) redirect("/dashboard");
   const sp = await searchParams;
-  const days = PERIODS.includes(Number(sp.days) as (typeof PERIODS)[number])
-    ? Number(sp.days)
-    : 30;
-  const fromDate = istDateNDaysAgo(days);
-  // IST start-of-day for timestamptz columns (count_date is a plain date already).
-  const fromTs = `${fromDate}T00:00:00+05:30`;
+  const { from, to } = resolveDateRange(sp.from, sp.to);
+  // IST day bounds for timestamptz columns (count_date is a plain date already).
+  const fromTs = `${from}T00:00:00+05:30`;
+  const toTs = `${to}T23:59:59.999+05:30`;
 
   const supabase = await createClient();
   const [varRes, matRes, wacRes, ledgerRes, unmappedRes, unmappedCountRes, recipesRes] = await Promise.all([
@@ -74,7 +62,8 @@ export default async function VariancePage({
       .select(
         "count_date, department_id, raw_material_id, raw_material_name, stock_unit, system_qty, actual_qty, variance, unit_cost, variance_value",
       )
-      .gte("count_date", fromDate)
+      .gte("count_date", from)
+      .lte("count_date", to)
       .order("count_date", { ascending: false }),
     supabase.from("raw_materials").select("id, category"),
     supabase.from("weighted_average_cost").select("raw_material_id, weighted_avg_cost"),
@@ -82,7 +71,8 @@ export default async function VariancePage({
       .from("inventory_ledger")
       .select("raw_material_id, quantity, type")
       .in("type", ["SALES_DEPLETION", "WASTAGE"])
-      .gte("created_at", fromTs),
+      .gte("created_at", fromTs)
+      .lte("created_at", toTs),
     supabase
       .from("unmapped_sales")
       .select("id, pos_item_code, item_name, quantity, created_at")
@@ -162,25 +152,13 @@ export default async function VariancePage({
         <span className="text-neutral-700">Variance Analysis</span>
       </div>
 
-      <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
-        <SectionHeader
-          eyebrow="Flagship"
-          title="Theoretical vs Actual"
-          description="What the books say you should have, against what you physically counted — the gap is wastage, theft, or mis-portioning."
-        />
-        <nav className="flex gap-1 rounded-lg border border-[#e6e0d3] bg-[#f7f3ec] p-1">
-          {PERIODS.map((d) => (
-            <Link
-              key={d}
-              href={`?days=${d}`}
-              className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
-                d === days ? "bg-indigo-100 text-indigo-700" : "text-neutral-600 hover:text-neutral-900"
-              }`}
-            >
-              {d === 365 ? "1y" : `${d}d`}
-            </Link>
-          ))}
-        </nav>
+      <SectionHeader
+        eyebrow="Flagship"
+        title="Theoretical vs Actual"
+        description="What the books say you should have, against what you physically counted — the gap is wastage, theft, or mis-portioning."
+      />
+      <div className="mb-8 mt-4">
+        <DateRangeUrlControl from={from} to={to} />
       </div>
 
       {loadError && (

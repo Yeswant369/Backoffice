@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { inr, formatDate } from "@/lib/format";
+import DateRangePresets from "../../../../_components/DateRangePresets";
 
 const ease = [0.22, 1, 0.36, 1] as const;
 
@@ -48,9 +49,6 @@ export default function VendorHistoryTabs({ purchases, payments }: Props) {
     [payments, from, to],
   );
 
-  const inputCls =
-    "rounded-lg border border-[#e6e0d3] bg-[#f7f3ec] px-2.5 py-1.5 text-sm text-neutral-900 outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/25 [color-scheme:light]";
-
   return (
     <div className="rounded-lg border border-[#e6e0d3] bg-[#f7f3ec] p-2">
       <div className="flex flex-wrap items-center justify-between gap-3 p-2">
@@ -77,12 +75,13 @@ export default function VendorHistoryTabs({ purchases, payments }: Props) {
             );
           })}
         </div>
-        <div className="flex items-center gap-2 text-xs text-neutral-500">
-          <span>From</span>
-          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className={inputCls} />
-          <span>To</span>
-          <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className={inputCls} />
-        </div>
+        <DateRangePresets
+          value={{ from, to }}
+          onChange={(r) => {
+            setFrom(r.from);
+            setTo(r.to);
+          }}
+        />
       </div>
 
       <AnimatePresence mode="wait">

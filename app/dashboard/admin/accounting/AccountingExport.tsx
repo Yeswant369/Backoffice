@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Field, inputCls } from "../../_components/forms";
+import DateRangePresets from "../../_components/DateRangePresets";
 
 export default function AccountingExport() {
   const today = useMemo(
@@ -25,26 +25,13 @@ export default function AccountingExport() {
   return (
     <div className="space-y-4 rounded-lg border border-[#e6e0d3] bg-[#f7f3ec] p-5">
       <h3 className="text-sm font-semibold text-neutral-900">Export for accounting</h3>
-      <div className="grid gap-4 sm:grid-cols-2 sm:max-w-md">
-        <Field label="From">
-          <input
-            type="date"
-            value={from}
-            max={to}
-            onChange={(e) => setFrom(e.target.value)}
-            className={inputCls}
-          />
-        </Field>
-        <Field label="To">
-          <input
-            type="date"
-            value={to}
-            max={today}
-            onChange={(e) => setTo(e.target.value)}
-            className={inputCls}
-          />
-        </Field>
-      </div>
+      <DateRangePresets
+        value={{ from, to }}
+        onChange={(r) => {
+          setFrom(r.from);
+          setTo(r.to);
+        }}
+      />
       <div className="flex flex-wrap gap-3 pt-1">
         <a
           href={href("purchases")}
