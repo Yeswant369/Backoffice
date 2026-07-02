@@ -1,11 +1,5 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
-import {
-  homeRouteForRoles,
-  normalizeRoles,
-  rolesCanAccessSection,
-  sectionFromPath,
-} from "@/lib/roles";
 
 /**
  * Refreshes the Supabase auth session on every request and performs optimistic,
@@ -73,16 +67,11 @@ export async function updateSession(request: NextRequest) {
     return response;
   }
 
-  // Authenticated: load roles from `profiles` (the source of truth).
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("roles")
-    .eq("id", user.id)
-    .single();
-  const roles = normalizeRoles(profile?.roles);
-
-  // Platform operators (SaaS vendor) have no tenant profile — route them to the
-  // provisioning console rather than the tenant dashboard / no-access page.
+  // Authenticated. We deliberately do NOT query `profiles` here — that DB
+  // round-trip ran on EVERY navigation and dominated click-to-render latency.
+  // Role-based access is enforced authoritatively by the dashboard layout (which
+  // renders only permitted nav) and each page's own guard (e.g. isAdmin); the
+  // proxy stays a cheap, optimistic session refresh + operator/login routing.
   const platformEmails = (process.env.PLATFORM_ADMIN_EMAILS ?? "")
     .split(",")
     .map((e) => e.trim().toLowerCase())
@@ -90,25 +79,15 @@ export async function updateSession(request: NextRequest) {
   const isPlatformOperator =
     !!user.email && platformEmails.includes(user.email.toLowerCase());
 
-  // Already signed in — keep them out of the login screen.
-  if (isLogin) {
-    return redirectTo(
-      isPlatformOperator ? "/platform" : homeRouteForRoles(roles),
-    );
+  // Platform operators (SaaS vendor) live in the console, not a tenant workspace.
+  if (isPlatformOperator) {
+    if (isLogin || isDashboard) return redirectTo("/platform");
+    return response;
   }
 
-  // Platform operators have no tenant workspace — keep them in the console.
-  if (isDashboard && isPlatformOperator) {
-    return redirectTo("/platform");
-  }
-
-  // Section-level guard: bounce to their own home if they lack the role.
-  if (isDashboard) {
-    const section = sectionFromPath(pathname);
-    if (section && !rolesCanAccessSection(roles, section)) {
-      return redirectTo(homeRouteForRoles(roles), { denied: section });
-    }
-  }
+  // Signed-in tenant user on /login → /dashboard, which forwards to their
+  // highest-privilege home (that index route reads roles once — not per click).
+  if (isLogin) return redirectTo("/dashboard");
 
   return response;
 }

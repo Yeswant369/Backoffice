@@ -26,17 +26,14 @@ export default async function DashboardLayout({
     redirect("/login");
   }
 
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("full_name, roles")
-    .eq("id", user.id)
-    .single();
+  // Profile + outlet-switcher state run concurrently (independent queries).
+  const [{ data: profile }, { activeId, locations }] = await Promise.all([
+    supabase.from("profiles").select("full_name, roles").eq("id", user.id).single(),
+    getActiveLocation(supabase),
+  ]);
 
   const roles = normalizeRoles(profile?.roles);
   const fullName = profile?.full_name ?? user.email ?? "User";
-
-  // Outlet switcher state (cross-outlet roles only; single-location users get 1).
-  const { activeId, locations } = await getActiveLocation(supabase);
 
   return (
     <div className="flex min-h-dvh bg-white text-neutral-900">

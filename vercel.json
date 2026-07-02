@@ -1,4 +1,5 @@
 {
+  "regions": ["bom1"],
   "crons": [
     { "path": "/api/cron/petpooja-pull", "schedule": "30 1 * * *" }
   ]
