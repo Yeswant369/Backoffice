@@ -104,6 +104,7 @@ create index if not exists idx_vendors_location on public.vendors (location_id);
 create table if not exists public.raw_materials (
   id                 uuid          primary key default gen_random_uuid(),
   name               varchar(255)  not null,
+  code               varchar(40),  -- short human code (RM-0001…), unique per outlet
   brand              varchar(255),
   purchase_unit      varchar(50)   not null,
   stock_unit         varchar(50)   not null,
@@ -116,6 +117,8 @@ create table if not exists public.raw_materials (
   created_at         timestamptz   not null default now()
 );
 create index if not exists idx_raw_materials_location on public.raw_materials (location_id);
+create unique index if not exists uq_raw_materials_location_code
+  on public.raw_materials (location_id, code) where code is not null;
 
 -- recipes
 create table if not exists public.recipes (
@@ -124,7 +127,9 @@ create table if not exists public.recipes (
   selling_price       numeric(14,2) not null default 0 check (selling_price >= 0),
   yield_portions      int           not null default 1 check (yield_portions > 0),
   overhead_percentage numeric(6,2)  not null default 0 check (overhead_percentage >= 0),
-  category            varchar(100),
+  category            varchar(100), -- cuisine grouping (Continental, Biryani, …)
+  course              varchar(60),  -- service course (Starter / Main / Dessert …)
+  video_url           text,         -- technique video / attachment link
   pos_item_code       varchar(80),  -- maps an external POS SKU → this recipe
   department_id       int           references public.departments (id) on delete set null,
   location_id         uuid          not null references public.locations (id) on delete cascade,
@@ -144,6 +149,7 @@ create table if not exists public.recipe_ingredients (
   raw_material_id  uuid          references public.raw_materials (id) on delete restrict,
   sub_recipe_id    uuid          references public.recipes (id) on delete restrict,
   quantity_needed  numeric(14,4) not null check (quantity_needed > 0),
+  notes            varchar(500), -- per-ingredient technique note
   location_id      uuid          not null references public.locations (id) on delete cascade,
   -- exactly one of {raw_material_id, sub_recipe_id} is set
   constraint recipe_ingredients_kind_chk check (num_nonnulls(raw_material_id, sub_recipe_id) = 1),
@@ -159,6 +165,22 @@ create index if not exists idx_recipe_ingredients_sub_recipe on public.recipe_in
 -- one sub-recipe line per (recipe, sub-recipe)
 create unique index if not exists uq_recipe_ingredients_subrecipe
   on public.recipe_ingredients (recipe_id, sub_recipe_id) where sub_recipe_id is not null;
+
+-- purchase_bills — one row per supplier bill (multi-line purchases, invoice no,
+-- bill + delivered-goods photo paths in the purchase-photos storage bucket).
+create table if not exists public.purchase_bills (
+  id                  uuid        primary key default gen_random_uuid(),
+  location_id         uuid        not null references public.locations (id) on delete cascade,
+  vendor_id           uuid        not null references public.vendors (id) on delete restrict,
+  invoice_no          varchar(80),
+  bill_date           date,
+  bill_photo_path     text,
+  delivery_photo_path text,
+  created_by          uuid        references public.profiles (id) on delete set null,
+  created_at          timestamptz not null default now()
+);
+create index if not exists idx_purchase_bills_loc_date on public.purchase_bills (location_id, bill_date);
+create index if not exists idx_purchase_bills_vendor   on public.purchase_bills (vendor_id);
 
 -- inventory_ledger — immutable. Convention: credits to_department, debits from_department.
 create table if not exists public.inventory_ledger (
@@ -183,6 +205,7 @@ create table if not exists public.inventory_ledger (
   created_by          uuid          references public.profiles (id) on delete set null,
   source_ref          text,         -- POS order id for SALES_DEPLETION idempotency
   transaction_date    date,         -- business/invoice date (backdated purchases); falls back to created_at
+  bill_id             uuid          references public.purchase_bills (id) on delete set null,
   location_id         uuid          not null references public.locations (id) on delete cascade,
   created_at          timestamptz   not null default now(),
   -- NULLs are DISTINCT, so legacy/non-POS rows never collide; two SALES_DEPLETION
@@ -195,6 +218,7 @@ create index if not exists idx_ledger_from_dept     on public.inventory_ledger (
 create index if not exists idx_ledger_to_dept       on public.inventory_ledger (to_department_id);
 create index if not exists idx_ledger_vendor        on public.inventory_ledger (vendor_id);
 create index if not exists idx_ledger_location      on public.inventory_ledger (location_id);
+create index if not exists idx_inventory_ledger_bill on public.inventory_ledger (bill_id) where bill_id is not null;
 
 -- manual_sales_log — insert explodes the recipe into MANUAL_SALE ledger rows.
 create table if not exists public.manual_sales_log (
@@ -248,11 +272,31 @@ create table if not exists public.kitchen_production (
   prepared_qty    numeric(14,3) not null default 0 check (prepared_qty >= 0),
   sold_qty        numeric(14,3) not null default 0 check (sold_qty >= 0),
   wastage_qty     numeric(14,3) not null default 0 check (wastage_qty >= 0),
+  staff_meals_qty numeric(14,3) not null default 0,
+  closing_qty     numeric(14,3),  -- null = leftover not counted
+  wastage_photo_path text,
   notes           text,
   created_at      timestamptz   not null default now(),
   constraint uq_kitchen_production unique (location_id, department_id, recipe_id, production_date)
 );
 create index if not exists idx_kitchen_production_location on public.kitchen_production (location_id);
+
+-- sub_recipe_production — sub-recipe DAY LEDGER: made/waste/closing per day;
+-- opening/available/used/variance derived in sub_recipe_daily.
+create table if not exists public.sub_recipe_production (
+  id               uuid          primary key default gen_random_uuid(),
+  location_id      uuid          not null references public.locations (id) on delete cascade,
+  recipe_id        uuid          not null references public.recipes (id) on delete restrict,
+  production_date  date          not null default current_date,
+  made_qty         numeric(14,3) not null default 0 check (made_qty >= 0),
+  waste_qty        numeric(14,3) not null default 0 check (waste_qty >= 0),
+  closing_qty      numeric(14,3) check (closing_qty >= 0),
+  waste_photo_path text,
+  notes            text,
+  created_at       timestamptz   not null default now(),
+  constraint uq_sub_recipe_production unique (location_id, recipe_id, production_date)
+);
+create index if not exists idx_sub_recipe_production_loc on public.sub_recipe_production (location_id, production_date);
 
 -- daily_sales_reconciliation
 create table if not exists public.daily_sales_reconciliation (
@@ -545,12 +589,107 @@ $$;
 revoke all on function public.pos_has_location_creds() from public;
 grant execute on function public.pos_has_location_creds() to authenticated;
 
+-- save_recipe(): ATOMIC recipe create/update — header + ingredient replacement
+-- + sub-recipe cycle check in ONE transaction, serialized per location by an
+-- advisory lock (see 0029 for the failure modes this closes). SECURITY INVOKER.
+create or replace function public.save_recipe(
+  p_recipe_id   uuid,
+  p_fields      jsonb,
+  p_ingredients jsonb
+) returns uuid
+language plpgsql as $$
+declare
+  v_home  uuid := public.current_location_id();
+  v_id    uuid := p_recipe_id;
+  v_cycle boolean;
+begin
+  if v_home is null then
+    raise exception 'NO_HOME: account has no home location';
+  end if;
+  perform pg_advisory_xact_lock(hashtext('recipe_graph:' || v_home::text));
+
+  if v_id is null then
+    insert into public.recipes
+      (name, selling_price, yield_portions, overhead_percentage,
+       category, course, video_url, pos_item_code, department_id, location_id)
+    values
+      (p_fields->>'name',
+       (p_fields->>'selling_price')::numeric,
+       (p_fields->>'yield_portions')::int,
+       (p_fields->>'overhead_percentage')::numeric,
+       nullif(p_fields->>'category', ''),
+       nullif(p_fields->>'course', ''),
+       nullif(p_fields->>'video_url', ''),
+       nullif(p_fields->>'pos_item_code', ''),
+       nullif(p_fields->>'department_id', '')::int,
+       v_home)
+    returning id into v_id;
+  else
+    update public.recipes set
+      name                = p_fields->>'name',
+      selling_price       = (p_fields->>'selling_price')::numeric,
+      yield_portions      = (p_fields->>'yield_portions')::int,
+      overhead_percentage = (p_fields->>'overhead_percentage')::numeric,
+      category            = nullif(p_fields->>'category', ''),
+      course              = nullif(p_fields->>'course', ''),
+      video_url           = nullif(p_fields->>'video_url', ''),
+      pos_item_code       = nullif(p_fields->>'pos_item_code', ''),
+      department_id       = nullif(p_fields->>'department_id', '')::int
+    where id = v_id and location_id = v_home;
+    if not found then
+      raise exception 'NOT_FOUND: recipe not in your location';
+    end if;
+    delete from public.recipe_ingredients where recipe_id = v_id;
+  end if;
+
+  insert into public.recipe_ingredients
+    (recipe_id, raw_material_id, sub_recipe_id, quantity_needed, notes, location_id)
+  select
+    v_id,
+    nullif(e->>'raw_material_id', '')::uuid,
+    nullif(e->>'sub_recipe_id', '')::uuid,
+    (e->>'quantity_needed')::numeric,
+    nullif(e->>'notes', ''),
+    v_home
+  from jsonb_array_elements(p_ingredients) e;
+
+  if not exists (select 1 from public.recipe_ingredients where recipe_id = v_id) then
+    raise exception 'NO_INGREDIENTS: a recipe needs at least one ingredient';
+  end if;
+
+  with recursive walk(node) as (
+    select ri.sub_recipe_id from public.recipe_ingredients ri
+     where ri.recipe_id = v_id and ri.sub_recipe_id is not null
+    union
+    select ri.sub_recipe_id from public.recipe_ingredients ri
+      join walk w on ri.recipe_id = w.node
+     where ri.sub_recipe_id is not null
+  )
+  select exists (select 1 from walk where node = v_id) into v_cycle;
+  if v_cycle then
+    raise exception 'CYCLE: a sub-recipe (directly or indirectly) contains this recipe';
+  end if;
+
+  return v_id;
+end $$;
+revoke all on function public.save_recipe(uuid, jsonb, jsonb) from public;
+grant execute on function public.save_recipe(uuid, jsonb, jsonb) to authenticated;
+
 -- pos_orders RLS (here, not with the table def, because the policy references
 -- current_location_ids() which is defined just above).
 alter table public.pos_orders enable row level security;
 drop policy if exists pos_orders_select on public.pos_orders;
 create policy pos_orders_select on public.pos_orders for select to authenticated
   using (location_id in (select public.current_location_ids()));
+
+-- purchase_bills RLS (same placement reason).
+alter table public.purchase_bills enable row level security;
+drop policy if exists purchase_bills_select on public.purchase_bills;
+create policy purchase_bills_select on public.purchase_bills for select to authenticated
+  using (location_id in (select public.current_location_ids()));
+drop policy if exists purchase_bills_insert on public.purchase_bills;
+create policy purchase_bills_insert on public.purchase_bills for insert to authenticated
+  with check (location_id in (select public.current_writable_location_ids()));
 
 -- Two outlets must not claim the same Petpooja store (shared company creds +
 -- duplicate restID would cross-ingest another restaurant's orders).
@@ -601,6 +740,7 @@ create or replace function public.handle_manual_sale()
 returns trigger language plpgsql security definer set search_path = public as $$
 declare
   v_kitchen_id int;
+  v_from_dept  int;
 begin
   select id into v_kitchen_id from public.departments
   where lower(name) = 'kitchen' and location_id = new.location_id limit 1;
@@ -611,9 +751,14 @@ begin
       using errcode = 'no_data_found';
   end if;
 
+  -- Cost lands where revenue is attributed (recipe's department; fallback Kitchen).
+  select coalesce(r.department_id, v_kitchen_id) into v_from_dept
+  from public.recipes r where r.id = new.recipe_id;
+  v_from_dept := coalesce(v_from_dept, v_kitchen_id);
+
   insert into public.inventory_ledger
     (raw_material_id, from_department_id, to_department_id, type, quantity, location_id, transaction_date)
-  select ri.raw_material_id, v_kitchen_id, null, 'MANUAL_SALE',
+  select ri.raw_material_id, v_from_dept, null, 'MANUAL_SALE',
          ri.quantity_needed * new.quantity_sold, new.location_id, new.sale_date
   from public.recipe_ingredients ri
   where ri.recipe_id = new.recipe_id and ri.raw_material_id is not null;
@@ -904,11 +1049,15 @@ select
   kp.prepared_qty,
   coalesce(rsv.portions, kp.sold_qty)::numeric(14,3) as sold_qty,
   kp.wastage_qty,
-  (kp.prepared_qty - coalesce(rsv.portions, kp.sold_qty) - kp.wastage_qty) as variance,
+  (kp.prepared_qty - coalesce(rsv.portions, kp.sold_qty) - kp.wastage_qty
+     - kp.staff_meals_qty - coalesce(kp.closing_qty, 0)) as variance,
   r.selling_price,
   round(public.recipe_cogs(kp.recipe_id), 2)                 as unit_cost,
   round(kp.wastage_qty * public.recipe_cogs(kp.recipe_id), 2) as wastage_cost,
-  kp.notes
+  kp.notes,
+  kp.staff_meals_qty,
+  kp.closing_qty,
+  kp.wastage_photo_path
 from public.kitchen_production kp
 join public.recipes r on r.id = kp.recipe_id
 left join public.departments d on d.id = kp.department_id and d.location_id = kp.location_id
@@ -918,6 +1067,92 @@ left join public.recipe_sales_volume rsv
  -- attach sales only to the row in the recipe's OWN department, so a recipe
  -- prepared in two departments never has the full sales broadcast to both.
  and kp.department_id = r.department_id;
+
+-- sub_recipe_daily — the sub-recipe day ledger: opening carry-forward (counted
+-- closing wins, else system carry), available = opening+made, used AUTO from
+-- parent dish sales × per-portion factor + own direct sales. See 0032.
+create or replace view public.sub_recipe_daily with (security_invoker = on) as
+with recursive usage as (
+  select location_id, recipe_id, day, sum(used) as used_qty
+  from (
+    select rsv.location_id, ri.sub_recipe_id as recipe_id, rsv.sold_on as day,
+           rsv.portions * ri.quantity_needed / greatest(p.yield_portions, 1) as used
+      from public.recipe_ingredients ri
+      join public.recipes p on p.id = ri.recipe_id
+      join public.recipe_sales_volume rsv
+        on rsv.recipe_id = p.id and rsv.location_id = p.location_id
+     where ri.sub_recipe_id is not null
+    union all
+    -- own direct sales — only for recipes actually used AS subs
+    select rsv.location_id, rsv.recipe_id, rsv.sold_on, rsv.portions::numeric
+      from public.recipe_sales_volume rsv
+     where exists (select 1 from public.recipe_ingredients ri
+                    where ri.sub_recipe_id = rsv.recipe_id)
+  ) u
+  group by location_id, recipe_id, day
+),
+tracked as (
+  select location_id, recipe_id, min(production_date) as first_day
+    from public.sub_recipe_production
+   group by location_id, recipe_id
+),
+-- UNION of entry-days and usage-days per tracked sub: gap-day usage (sheet not
+-- saved that day) still depletes the carry chain.
+day_spine as (
+  select t.location_id, t.recipe_id, d.day
+    from tracked t
+    join (
+      select location_id, recipe_id, production_date as day
+        from public.sub_recipe_production
+      union
+      select location_id, recipe_id, day from usage
+    ) d
+      on d.location_id = t.location_id and d.recipe_id = t.recipe_id
+   where d.day >= t.first_day
+),
+entries as (
+  select ds.location_id, ds.recipe_id, ds.day as production_date,
+         sp.id,
+         coalesce(sp.made_qty, 0)::numeric(14,3)  as made_qty,
+         coalesce(sp.waste_qty, 0)::numeric(14,3) as waste_qty,
+         sp.closing_qty, sp.waste_photo_path, sp.notes,
+         coalesce(u.used_qty, 0)   as used_qty,
+         row_number() over (partition by ds.location_id, ds.recipe_id
+                            order by ds.day) as rn
+    from day_spine ds
+    left join public.sub_recipe_production sp
+      on sp.location_id = ds.location_id and sp.recipe_id = ds.recipe_id
+     and sp.production_date = ds.day
+    left join usage u
+      on u.location_id = ds.location_id and u.recipe_id = ds.recipe_id
+     and u.day = ds.day
+),
+walk as (
+  select e.*, 0::numeric as opening_qty
+    from entries e where e.rn = 1
+  union all
+  select e.*,
+         coalesce(w.closing_qty, w.opening_qty + w.made_qty - w.used_qty - w.waste_qty)
+    from entries e
+    join walk w on w.location_id = e.location_id and w.recipe_id = e.recipe_id
+               and w.rn = e.rn - 1
+)
+select
+  w.id, w.location_id, w.recipe_id, r.name as recipe_name,
+  r.department_id, w.production_date,
+  round(w.opening_qty, 3)                        as opening_qty,
+  w.made_qty,
+  round(w.opening_qty + w.made_qty, 3)           as available_qty,
+  round(w.used_qty, 3)                           as used_qty,
+  w.waste_qty,
+  w.closing_qty,
+  case when w.closing_qty is not null
+       then round(w.opening_qty + w.made_qty - w.used_qty - w.waste_qty - w.closing_qty, 3)
+       end                                       as variance_qty,
+  round(public.recipe_cogs(w.recipe_id), 2)      as unit_cost,
+  w.waste_photo_path, w.notes
+from walk w
+join public.recipes r on r.id = w.recipe_id;
 
 -- department_sales — sales (manual + POS) rolled to the item's department.
 create or replace view public.department_sales with (security_invoker = on) as
@@ -1032,6 +1267,17 @@ select
 from cogs c
 full join rev r on c.location_id = r.location_id and c.d = r.d;
 
+-- Daily purchases (business-day rollup; IST fallback for undated legacy rows).
+create or replace view public.daily_purchases with (security_invoker = on) as
+select location_id,
+       coalesce(transaction_date, (created_at at time zone 'Asia/Kolkata')::date) as day,
+       count(*)                                as lines,
+       count(distinct bill_id)                 as bills,
+       sum(quantity * coalesce(unit_price, 0)) as total
+  from public.inventory_ledger
+ where type = 'PURCHASE'
+ group by location_id, coalesce(transaction_date, (created_at at time zone 'Asia/Kolkata')::date);
+
 -- POS analytics (Petpooja pull). security_invoker → inherit pos_orders RLS.
 create or replace view public.pos_daily_sales with (security_invoker = on) as
 select location_id, order_date,
@@ -1075,6 +1321,118 @@ select ps.location_id, po.order_date, ps.recipe_id, r.name as item_name, r.categ
   join public.recipes r on r.id = ps.recipe_id
  where po.status = 'Success'
  group by ps.location_id, po.order_date, ps.recipe_id, r.name, r.category, r.selling_price;
+
+-- Department daily stock ledger — opening + received − closing = consumption,
+-- all DERIVED from the immutable ledger (counted closings snap the balance via
+-- VARIANCE_RECONCILIATION, so carry-forward openings are automatic). See 0030.
+create or replace view public.department_daily_stock with (security_invoker = on) as
+with mv as (
+  select location_id,
+         coalesce(transaction_date, (created_at at time zone 'Asia/Kolkata')::date) as day,
+         to_department_id as department_id, raw_material_id, type, quantity as qty
+    from public.inventory_ledger
+   where to_department_id is not null
+  union all
+  select location_id,
+         coalesce(transaction_date, (created_at at time zone 'Asia/Kolkata')::date),
+         from_department_id, raw_material_id, type, -quantity
+    from public.inventory_ledger
+   where from_department_id is not null
+),
+agg as (
+  select location_id, department_id, raw_material_id, day,
+         sum(qty) as net_qty,
+         sum(case when qty > 0 and type in ('ISSUE_TO_KITCHEN','INTER_DEPARTMENT_TRANSFER')
+                  then qty else 0 end) as issued_in_qty,
+         sum(case when qty > 0 and type = 'PURCHASE' then qty else 0 end) as purchased_qty,
+         sum(case when qty < 0 and type in ('ISSUE_TO_KITCHEN','INTER_DEPARTMENT_TRANSFER')
+                  then -qty else 0 end) as transferred_out_qty,
+         sum(case when qty < 0 and type in ('SALES_DEPLETION','MANUAL_SALE')
+                  then -qty else 0 end) as sold_qty,
+         sum(case when qty < 0 and type = 'WASTAGE' then -qty else 0 end) as wasted_qty,
+         sum(case when type = 'VARIANCE_RECONCILIATION' then qty else 0 end) as variance_qty
+    from mv
+   group by location_id, department_id, raw_material_id, day
+),
+-- one row per (dept, material, DAY) from first movement to today — idle days
+-- included so balances carry forward (Opening(d) = Closing(d−1) always).
+spine as (
+  select location_id, department_id, raw_material_id,
+         generate_series(min(day), (now() at time zone 'Asia/Kolkata')::date,
+                         interval '1 day')::date as day
+    from agg
+   group by location_id, department_id, raw_material_id
+),
+dense as (
+  select s.location_id, s.department_id, s.raw_material_id, s.day,
+         coalesce(a.net_qty, 0)             as net_qty,
+         coalesce(a.issued_in_qty, 0)       as issued_in_qty,
+         coalesce(a.purchased_qty, 0)       as purchased_qty,
+         coalesce(a.transferred_out_qty, 0) as transferred_out_qty,
+         coalesce(a.sold_qty, 0)            as sold_qty,
+         coalesce(a.wasted_qty, 0)          as wasted_qty,
+         coalesce(a.variance_qty, 0)        as variance_qty
+    from spine s
+    left join agg a
+      on a.location_id = s.location_id and a.department_id = s.department_id
+     and a.raw_material_id = s.raw_material_id and a.day = s.day
+),
+run as (
+  select dense.*,
+         sum(net_qty) over (partition by location_id, department_id, raw_material_id
+                            order by day) as closing_qty
+    from dense
+)
+select
+  r.location_id,
+  r.department_id,
+  d.name as department_name,
+  r.day,
+  round(sum((r.closing_qty - r.net_qty)      * coalesce(w.weighted_avg_cost, 0))::numeric, 2) as opening_value,
+  round(sum((r.issued_in_qty + r.purchased_qty) * coalesce(w.weighted_avg_cost, 0))::numeric, 2) as received_value,
+  round(sum(r.transferred_out_qty            * coalesce(w.weighted_avg_cost, 0))::numeric, 2) as transferred_out_value,
+  round(sum(r.sold_qty                       * coalesce(w.weighted_avg_cost, 0))::numeric, 2) as sales_consumption_value,
+  round(sum(r.wasted_qty                     * coalesce(w.weighted_avg_cost, 0))::numeric, 2) as wastage_value,
+  round(sum(-r.variance_qty                  * coalesce(w.weighted_avg_cost, 0))::numeric, 2) as shrinkage_value,
+  round(sum(r.closing_qty                    * coalesce(w.weighted_avg_cost, 0))::numeric, 2) as closing_value,
+  round(sum((r.sold_qty + r.wasted_qty - r.variance_qty)
+                                             * coalesce(w.weighted_avg_cost, 0))::numeric, 2) as consumption_value,
+  exists (
+    select 1 from public.stock_counts sc
+     where sc.location_id = r.location_id
+       and sc.department_id = r.department_id
+       and sc.count_date = r.day
+  ) as counted
+from run r
+left join public.weighted_average_cost w
+  on w.raw_material_id = r.raw_material_id and w.location_id = r.location_id
+left join public.departments d
+  on d.id = r.department_id and d.location_id = r.location_id
+group by r.location_id, r.department_id, d.name, r.day;
+
+-- Department × day: sales vs consumption+wastage → food cost %.
+create or replace view public.department_daily_costing with (security_invoker = on) as
+select
+  coalesce(st.location_id, sa.location_id)     as location_id,
+  coalesce(st.department_id, sa.department_id) as department_id,
+  coalesce(st.department_name, d2.name, 'Unassigned') as department_name,
+  coalesce(st.day, sa.sold_on)                 as day,
+  coalesce(sa.sale_value, 0)                   as sales_value,
+  coalesce(st.consumption_value, 0)            as consumption_value,
+  coalesce(st.wastage_value, 0)                as wastage_value,
+  coalesce(st.shrinkage_value, 0)              as shrinkage_value,
+  coalesce(st.counted, false)                  as counted,
+  case when coalesce(sa.sale_value, 0) > 0
+       then round(coalesce(st.consumption_value, 0) / sa.sale_value * 100, 1)
+       end                                     as food_cost_pct
+from public.department_daily_stock st
+full join public.department_sales sa
+  on sa.location_id = st.location_id
+ and sa.department_id is not distinct from st.department_id
+ and sa.sold_on = st.day
+left join public.departments d2
+  on d2.id = coalesce(st.department_id, sa.department_id)
+ and d2.location_id = coalesce(st.location_id, sa.location_id);
 
 -- =============================================================================
 -- SECTION 8: TRIGGERS
@@ -1132,7 +1490,7 @@ declare
     'raw_materials', 'inventory_ledger', 'recipes', 'recipe_ingredients',
     'manual_sales_log', 'vendor_payments', 'daily_sales_reconciliation',
     'petty_cash_expenses', 'location_sheets', 'unmapped_sales', 'stock_counts', 'pos_sales', 'dues',
-    'kitchen_production'
+    'kitchen_production', 'sub_recipe_production'
   ];
 begin
   foreach t in array all_tables loop
@@ -1185,7 +1543,8 @@ declare
   mutable text[] := array[
     'departments', 'vendors', 'raw_materials', 'recipes', 'recipe_ingredients',
     'manual_sales_log', 'daily_sales_reconciliation', 'petty_cash_expenses',
-    'unmapped_sales', 'stock_counts', 'pos_sales', 'dues', 'kitchen_production'
+    'unmapped_sales', 'stock_counts', 'pos_sales', 'dues', 'kitchen_production',
+    'sub_recipe_production'
   ];
 begin
   foreach t in array mutable loop
@@ -1247,6 +1606,55 @@ grant select (id, organization_id, name, google_spreadsheet_id,
 grant update (name, google_spreadsheet_id)                       on public.locations to authenticated;
 grant select on public.pos_orders, public.pos_daily_sales, public.pos_sales_by_channel,
                 public.pos_daypart, public.pos_item_report to authenticated;
+grant select, insert on public.purchase_bills to authenticated;
+grant select on public.daily_purchases to authenticated;
+grant select on public.department_daily_stock, public.department_daily_costing to authenticated;
+grant select on public.sub_recipe_daily to authenticated;
+
+-- Storage bucket + per-location policies for purchase photos (Supabase only —
+-- guarded so the hero schema also applies on plain Postgres for local verify).
+do $$
+begin
+  if to_regclass('storage.buckets') is not null then
+    insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+    values ('purchase-photos', 'purchase-photos', false, 10485760,  -- 10 MB
+            array['image/jpeg','image/png','image/webp','image/heic','image/heif','image/gif'])
+    on conflict (id) do update
+      set file_size_limit    = excluded.file_size_limit,
+          allowed_mime_types = excluded.allowed_mime_types;
+    drop policy if exists purchase_photos_insert on storage.objects;
+    create policy purchase_photos_insert on storage.objects for insert to authenticated
+      with check (
+        bucket_id = 'purchase-photos'
+        and (storage.foldername(name))[1] = (select public.current_location_id()::text)
+      );
+    drop policy if exists purchase_photos_select on storage.objects;
+    create policy purchase_photos_select on storage.objects for select to authenticated
+      using (
+        bucket_id = 'purchase-photos'
+        and (storage.foldername(name))[1] = (select public.current_location_id()::text)
+      );
+
+    insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+    values ('wastage-photos', 'wastage-photos', false, 10485760,
+            array['image/jpeg','image/png','image/webp','image/heic','image/heif','image/gif'])
+    on conflict (id) do update
+      set file_size_limit    = excluded.file_size_limit,
+          allowed_mime_types = excluded.allowed_mime_types;
+    drop policy if exists wastage_photos_insert on storage.objects;
+    create policy wastage_photos_insert on storage.objects for insert to authenticated
+      with check (
+        bucket_id = 'wastage-photos'
+        and (storage.foldername(name))[1] = (select public.current_location_id()::text)
+      );
+    drop policy if exists wastage_photos_select on storage.objects;
+    create policy wastage_photos_select on storage.objects for select to authenticated
+      using (
+        bucket_id = 'wastage-photos'
+        and (storage.foldername(name))[1] = (select public.current_location_id()::text)
+      );
+  end if;
+end $$;
 -- profiles: SECURITY GATE — authenticated may edit ONLY full_name (not roles/location_id),
 -- and cannot self-insert/delete (rows are managed by the trigger + auth cascade).
 grant select               on public.profiles to authenticated;
@@ -1256,6 +1664,7 @@ grant select, insert, update, delete on public.departments               to auth
 grant select, insert, update, delete on public.vendors                   to authenticated;
 grant select, insert, update, delete on public.dues                      to authenticated;
 grant select, insert, update, delete on public.kitchen_production         to authenticated;
+grant select, insert, update, delete on public.sub_recipe_production      to authenticated;
 grant select, insert, update, delete on public.raw_materials             to authenticated;
 grant select, insert                 on public.inventory_ledger          to authenticated;
 grant select, insert, update, delete on public.recipes                   to authenticated;

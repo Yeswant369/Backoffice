@@ -198,6 +198,11 @@ export const ADMIN_NAV: AdminNavGroup[] = [
         icon: "M3 3v18h18|M7 16l3-4 3 2 4-6",
       },
       {
+        href: "/dashboard/admin/departments/daily",
+        label: "Daily Costing",
+        icon: "M8 2v4|M16 2v4|M3 8h18|M5 4h14a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V6a2 2 0 012-2z|M9 14l2 2 4-4",
+      },
+      {
         href: "/dashboard/admin/analytics/menu-engineering",
         label: "Menu Engineering",
         icon: "M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z",
@@ -253,6 +258,11 @@ export const ADMIN_NAV: AdminNavGroup[] = [
         icon: "M8 3v7a3 3 0 003 3v8m2-18a3 3 0 013 3v4a3 3 0 01-3 3",
       },
       {
+        href: "/dashboard/admin/wastage",
+        label: "Record Wastage",
+        icon: "M3 6h18|M8 6V4h8v2|M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6|M10 11v6|M14 11v6",
+      },
+      {
         href: "/dashboard/admin/sales",
         label: "Record Sale",
         icon: "M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z|M7 7h.01",
@@ -271,6 +281,11 @@ export const ADMIN_NAV: AdminNavGroup[] = [
         href: "/dashboard/admin/dues",
         label: "Dues Tracker",
         icon: "M12 1v22|M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6",
+      },
+      {
+        href: "/dashboard/admin/procurement/payments",
+        label: "Vendor Payments",
+        icon: "M12 1v22|M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6|M3 21h18",
       },
       {
         href: "/dashboard/admin/accounting",

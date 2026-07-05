@@ -31,6 +31,7 @@ const RESERVED_TABS = new Set(
     "Recipes", "Purchase Log", "Procurement Summary", "Vendors", "Vendor Master",
     "Dues Tracker", "Raw Materials", "Wastage", "Manual Sales", "Vendor Payments",
     "Daily Reconciliation", "Petty Cash", "Stock Counts",
+    "Kitchen Production", "Sub-Recipe Production", "Department P&L", "Profit & Loss",
   ].map((t) => t.toLowerCase()),
 );
 function safeRecipeTab(category: string): string {

@@ -41,7 +41,7 @@ export async function syncInhouseTabs(
   const { data: mats } = await supabase
     .from("raw_materials")
     .select(
-      "name, brand, purchase_unit, stock_unit, conversion_factor, par_level, category, vendors ( name )",
+      "name, code, brand, purchase_unit, stock_unit, conversion_factor, par_level, category, vendors ( name )",
     )
     .eq("location_id", locationId)
     .order("name");
@@ -50,9 +50,10 @@ export async function syncInhouseTabs(
     spreadsheetId,
     existing,
     "Raw Materials",
-    ["Name", "Brand", "Purchase Unit", "Stock Unit", "Conversion", "PAR", "Category", "Vendor"],
+    ["Code", "Name", "Brand", "Purchase Unit", "Stock Unit", "Conversion", "PAR", "Category", "Vendor"],
     ((mats ?? []) as unknown as Array<{
       name: string;
+      code: string | null;
       brand: string | null;
       purchase_unit: string;
       stock_unit: string;
@@ -61,6 +62,7 @@ export async function syncInhouseTabs(
       category: string | null;
       vendors: NameRef;
     }>).map((m) => [
+      s(m.code),
       s(m.name),
       s(m.brand),
       s(m.purchase_unit),
@@ -295,7 +297,7 @@ export async function syncInhouseTabs(
   const { data: prod } = await supabase
     .from("kitchen_production_view")
     .select(
-      "production_date, department_name, recipe_name, prepared_qty, sold_qty, wastage_qty, variance, unit_cost, wastage_cost",
+      "production_date, department_name, recipe_name, prepared_qty, sold_qty, wastage_qty, variance, unit_cost, wastage_cost, staff_meals_qty, closing_qty",
     )
     .eq("location_id", locationId)
     .order("production_date", { ascending: false });
@@ -304,7 +306,7 @@ export async function syncInhouseTabs(
     spreadsheetId,
     existing,
     "Kitchen Production",
-    ["Date", "Department", "Item", "Prepared", "Sold", "Wasted", "Variance", "Unit Cost", "Wastage Cost"],
+    ["Date", "Department", "Item", "Prepared", "Sold", "Wasted", "Variance", "Unit Cost", "Wastage Cost", "Staff Meals", "Closing"],
     ((prod ?? []) as unknown as Array<Record<string, unknown>>).map((p) => [
       day(p.production_date),
       s(p.department_name),
@@ -315,9 +317,41 @@ export async function syncInhouseTabs(
       n(p.variance),
       n(p.unit_cost),
       n(p.wastage_cost),
+      n(p.staff_meals_qty),
+      p.closing_qty == null ? "" : n(p.closing_qty),
     ]),
   );
   tabs.push("Kitchen Production");
+
+  // Sub-Recipe Production — day ledger with carry-forward opening + auto-used.
+  const { data: subProd } = await supabase
+    .from("sub_recipe_daily")
+    .select(
+      "production_date, recipe_name, opening_qty, made_qty, available_qty, used_qty, waste_qty, closing_qty, variance_qty, unit_cost",
+    )
+    .eq("location_id", locationId)
+    .order("production_date", { ascending: false })
+    .order("recipe_name");
+  await mirror(
+    sheets,
+    spreadsheetId,
+    existing,
+    "Sub-Recipe Production",
+    ["Date", "Sub-Recipe", "Opening", "Made", "Available", "Used", "Waste", "Closing", "Variance", "Unit Cost"],
+    ((subProd ?? []) as unknown as Array<Record<string, unknown>>).map((p) => [
+      day(p.production_date),
+      s(p.recipe_name),
+      n(p.opening_qty),
+      n(p.made_qty),
+      n(p.available_qty),
+      n(p.used_qty),
+      n(p.waste_qty),
+      p.closing_qty == null ? "" : n(p.closing_qty),
+      p.variance_qty == null ? "" : n(p.variance_qty),
+      n(p.unit_cost),
+    ]),
+  );
+  tabs.push("Sub-Recipe Production");
 
   // Department P&L — raw issued-in cost vs sale revenue vs item wastage, per dept.
   const { data: dpl } = await supabase

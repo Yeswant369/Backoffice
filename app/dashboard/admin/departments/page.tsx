@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import { isAdmin } from "@/lib/auth";
 import { inr } from "@/lib/format";
 import SectionHeader from "../../_components/SectionHeader";
+import DepartmentManager, { type DepartmentOption } from "./DepartmentManager";
 
 export const dynamic = "force-dynamic";
 
@@ -34,6 +35,13 @@ export default async function DepartmentPLPage() {
     .eq("location_id", loc)
     .order("sale_value", { ascending: false });
   const rows = (data ?? []) as DeptPL[];
+
+  const { data: deptData } = await supabase
+    .from("departments")
+    .select("id, name")
+    .eq("location_id", loc)
+    .order("name");
+  const departments = (deptData ?? []) as DepartmentOption[];
 
   const tot = rows.reduce(
     (a, r) => ({
@@ -82,6 +90,8 @@ export default async function DepartmentPLPage() {
         </p>
       )}
 
+      <DepartmentManager departments={departments} />
+
       <div className="overflow-hidden rounded-lg border border-[#e6e0d3] bg-[#f7f3ec]">
         {rows.length === 0 ? (
           <p className="px-5 py-10 text-center text-sm text-neutral-500">
@@ -108,7 +118,16 @@ export default async function DepartmentPLPage() {
                     className="border-t border-[#e6e0d3]"
                   >
                     <td className="px-5 py-3.5 font-medium text-neutral-900">
-                      {r.department_name ?? "Unassigned"}
+                      {r.department_id != null ? (
+                        <Link
+                          href={`/dashboard/admin/departments/daily?dept=${r.department_id}`}
+                          className="text-indigo-700 hover:text-indigo-500"
+                        >
+                          {r.department_name ?? "Unassigned"}
+                        </Link>
+                      ) : (
+                        (r.department_name ?? "Unassigned")
+                      )}
                     </td>
                     <td className="px-5 py-3.5 text-right tabular-nums text-neutral-700">
                       {inr(r.sale_value)}

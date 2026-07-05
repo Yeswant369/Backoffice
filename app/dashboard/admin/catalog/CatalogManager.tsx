@@ -19,6 +19,8 @@ interface Props {
   vendors: VendorRow[];
   materials: MaterialRow[];
   recipes: RecipeRow[];
+  /** Per-recipe plate cost (recipe_cogs) — powers sub-recipe line pricing. */
+  recipeUnitCosts: Record<string, number>;
   departments: { id: number; name: string }[];
   sheetUrl: string;
   connected: boolean;
@@ -29,6 +31,7 @@ export default function CatalogManager({
   vendors,
   materials,
   recipes,
+  recipeUnitCosts,
   departments,
   sheetUrl,
   connected,
@@ -45,6 +48,7 @@ export default function CatalogManager({
       materials.map((m) => ({
         id: m.id,
         name: m.name,
+        code: m.code,
         stock_unit: m.stock_unit,
         brand: m.brand,
         weighted_avg_cost: m.weighted_avg_cost,
@@ -99,6 +103,11 @@ export default function CatalogManager({
               <RecipePanel
                 recipes={recipes}
                 materials={materialOptions}
+                subRecipes={recipes.map((r) => ({
+                  id: r.id,
+                  name: r.name,
+                  unit_cost: recipeUnitCosts[r.id] ?? 0,
+                }))}
                 departments={departments}
                 sheetUrl={sheetUrl}
                 connected={connected}

@@ -14,6 +14,7 @@ export interface VendorRow {
 export interface MaterialRow {
   id: string;
   name: string;
+  code: string | null;
   brand: string | null;
   purchase_unit: string;
   stock_unit: string;
@@ -32,6 +33,8 @@ export interface RecipeRow {
   selling_price: number;
   ingredient_count: number;
   category: string | null;
+  course: string | null;
+  pos_item_code: string | null;
   yield_portions: number;
   overhead_percentage: number;
 }
@@ -46,6 +49,7 @@ export interface VendorOption {
 export interface MaterialOption {
   id: string;
   name: string;
+  code: string | null;
   stock_unit: string;
   brand: string | null;
   /** Weighted-average cost per stock unit (the @ Rate used for costing). */

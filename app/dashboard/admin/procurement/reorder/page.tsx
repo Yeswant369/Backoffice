@@ -98,8 +98,13 @@ export default async function ReorderPage() {
                     key={r.raw_material_id}
                     className="border-t border-[#e6e0d3] transition hover:bg-[#faf7f1]"
                   >
-                    <td className="px-5 py-3.5 font-medium text-neutral-900">
-                      {r.raw_material_name}
+                    <td className="px-5 py-3.5 font-medium">
+                      <Link
+                        href={`/dashboard/admin/materials/${r.raw_material_id}`}
+                        className="text-indigo-700 transition hover:text-indigo-500"
+                      >
+                        {r.raw_material_name}
+                      </Link>
                     </td>
                     <td
                       className={`px-5 py-3.5 text-right font-semibold tabular-nums ${

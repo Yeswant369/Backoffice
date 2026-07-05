@@ -24,37 +24,54 @@ export default async function CatalogPage({
       : "Create and manage the raw materials the rest of the system depends on.";
 
   const supabase = await createClient();
+  // Pin EVERYTHING to HOME — RLS read-scope spans the org for hybrid
+  // Admin+Owner users; an unpinned catalog would list (and offer in pickers)
+  // other outlets' vendors/materials/recipes.
   const { data: homeLoc } = await supabase.rpc("current_location_id");
+  const home = (homeLoc as string | null) ?? "";
 
-  const [vendorRes, matRes, recipeRes, wacRes, locRes, deptRes] =
+  const [vendorRes, matRes, recipeRes, wacRes, costingRes, locRes, deptRes] =
     await Promise.all([
     supabase
       .from("vendors")
       .select(
         "id, vendor_code, name, contact_person, phone, email, bank_name, account_number, ifsc_code, status",
       )
+      .eq("location_id", home)
       .order("name"),
     supabase
       .from("raw_materials")
       .select(
-        "id, name, brand, purchase_unit, stock_unit, conversion_factor, par_level, category, vendor_id, needs_review, vendors ( name )",
+        "id, name, code, brand, purchase_unit, stock_unit, conversion_factor, par_level, category, vendor_id, needs_review, vendors ( name )",
       )
+      .eq("location_id", home)
       .order("name"),
     supabase
       .from("recipes")
       .select(
-        "id, name, selling_price, yield_portions, overhead_percentage, category, recipe_ingredients!recipe_id ( count )",
+        "id, name, selling_price, yield_portions, overhead_percentage, category, course, pos_item_code, recipe_ingredients!recipe_id ( count )",
       )
+      .eq("location_id", home)
       .order("name"),
     supabase
       .from("weighted_average_cost")
-      .select("raw_material_id, weighted_avg_cost"),
-    // The caller's own location (RLS-scoped) → its Google Sheet id.
-    supabase.from("locations").select("google_spreadsheet_id").maybeSingle(),
+      .select("raw_material_id, weighted_avg_cost")
+      .eq("location_id", home),
+    // Plate cost per recipe — powers sub-recipe line pricing in the builder.
+    supabase
+      .from("recipe_costing")
+      .select("recipe_id, cogs")
+      .eq("location_id", home),
+    // The caller's own (home) location → its Google Sheet id.
+    supabase
+      .from("locations")
+      .select("google_spreadsheet_id")
+      .eq("id", home)
+      .maybeSingle(),
     supabase
       .from("departments")
       .select("id, name")
-      .eq("location_id", (homeLoc as string | null) ?? "")
+      .eq("location_id", home)
       .order("name"),
   ]);
 
@@ -79,6 +96,7 @@ export default async function CatalogPage({
     return {
       id: m.id,
       name: m.name,
+      code: m.code ?? null,
       brand: m.brand,
       purchase_unit: m.purchase_unit,
       stock_unit: m.stock_unit,
@@ -101,6 +119,8 @@ export default async function CatalogPage({
       selling_price: Number(r.selling_price),
       ingredient_count: agg?.[0]?.count ?? 0,
       category: r.category,
+      course: r.course ?? null,
+      pos_item_code: r.pos_item_code ?? null,
       yield_portions: Number(r.yield_portions ?? 1),
       overhead_percentage: Number(r.overhead_percentage ?? 0),
     };
@@ -131,6 +151,9 @@ export default async function CatalogPage({
         vendors={vendors}
         materials={materials}
         recipes={recipes}
+        recipeUnitCosts={Object.fromEntries(
+          (costingRes.data ?? []).map((c) => [c.recipe_id as string, Number(c.cogs ?? 0)]),
+        )}
         departments={departments}
         sheetUrl={sheetUrl}
         connected={connected}

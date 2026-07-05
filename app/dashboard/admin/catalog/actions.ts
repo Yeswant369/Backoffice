@@ -155,6 +155,7 @@ export async function importMaterialsFromGrid(
   const nameI = colIndex(headers, ["name", "material", "material name", "raw material"]);
   if (nameI < 0) return { error: 'The grid needs a "Name" column.' };
 
+  const codeI = colIndex(headers, ["code", "material code"]);
   const brandI = colIndex(headers, ["brand"]);
   const puI = colIndex(headers, ["purchase unit"]);
   const suI = colIndex(headers, ["stock unit", "unit"]);
@@ -166,9 +167,38 @@ export async function importMaterialsFromGrid(
   const locationId = await currentLocationId(supabase);
   if (!locationId) return { error: "Your account isn't assigned to a location." };
 
-  const { data: existingRows } = await supabase.from("raw_materials").select("name");
+  const vendI = colIndex(headers, ["vendor", "default vendor", "vendor name"]);
+
+  const [{ data: existingRows }, { data: vendorRows }] = await Promise.all([
+    supabase
+      .from("raw_materials")
+      .select("name, code")
+      .eq("location_id", locationId),
+    supabase.from("vendors").select("id, name").eq("location_id", locationId),
+  ]);
   const existing = new Set((existingRows ?? []).map((m) => m.name.toLowerCase()));
   const seen = new Set<string>();
+  // Round-trip the sheet's Vendor column (resolved by name within this outlet).
+  const vendorIdByName = new Map(
+    (vendorRows ?? []).map((v) => [String(v.name).toLowerCase(), v.id as string]),
+  );
+
+  // Codes already taken (DB + earlier rows in this batch). A typed code that
+  // collides falls back to auto-numbering rather than aborting the batch, and
+  // generated codes skip anything taken.
+  const usedCodes = new Set(
+    (existingRows ?? []).map((m) => String(m.code ?? "").toUpperCase()).filter(Boolean),
+  );
+  let seed = (existingRows ?? []).reduce((m, r) => {
+    const v = parseInt(String(r.code ?? "").replace(/^RM-0*/, ""), 10);
+    return Number.isFinite(v) && v > m ? v : m;
+  }, 0);
+  const nextFree = () => {
+    let c: string;
+    do c = `RM-${String(++seed).padStart(4, "0")}`;
+    while (usedCodes.has(c));
+    return c;
+  };
 
   const records = rows
     .map((row) => {
@@ -179,14 +209,23 @@ export async function importMaterialsFromGrid(
       seen.add(k);
       const cf = Number(cell(row, cfI)) || 1;
       const par = Number(cell(row, parI)) || 0;
+      const typedCode = (codeI >= 0 ? cell(row, codeI) : "").toUpperCase();
+      const code =
+        typedCode && !usedCodes.has(typedCode) ? typedCode : nextFree();
+      usedCodes.add(code);
       return {
         name,
+        code,
         brand: orNull(cell(row, brandI)),
         purchase_unit: cell(row, puI) || "unit",
         stock_unit: cell(row, suI) || "unit",
         conversion_factor: cf > 0 ? cf : 1,
         par_level: par >= 0 ? par : 0,
         category: orNull(cell(row, catI)),
+        vendor_id:
+          vendI >= 0
+            ? (vendorIdByName.get(cell(row, vendI).toLowerCase()) ?? null)
+            : null,
         location_id: locationId,
       };
     })
@@ -196,7 +235,14 @@ export async function importMaterialsFromGrid(
     return { error: "No new materials to import (all blank or already exist)." };
 
   const { error } = await supabase.from("raw_materials").insert(records);
-  if (error) return { error: error.message };
+  if (error) {
+    return {
+      error:
+        error.code === "23505"
+          ? "Import hit a duplicate material code — re-run the import (codes are re-numbered automatically)."
+          : error.message,
+    };
+  }
 
   revalidatePath("/dashboard/admin/catalog");
   return {
@@ -308,7 +354,14 @@ export async function deleteVendor(id: string): Promise<CatalogState> {
   if (denied) return { error: denied };
 
   const supabase = await createClient();
-  const { error } = await supabase.from("vendors").delete().eq("id", id);
+  const home = await currentLocationId(supabase);
+  if (!home) return { error: "Your account isn't assigned to a location." };
+  const { data: deleted, error } = await supabase
+    .from("vendors")
+    .delete()
+    .eq("id", id)
+    .eq("location_id", home)
+    .select("id");
   if (error) {
     return {
       error:
@@ -316,6 +369,9 @@ export async function deleteVendor(id: string): Promise<CatalogState> {
           ? "Can't delete: this vendor has ledger or payment history."
           : error.message,
     };
+  }
+  if (!deleted || deleted.length === 0) {
+    return { error: "Vendor not found in your location." };
   }
   revalidatePath("/dashboard/admin/catalog");
   return {};
@@ -344,8 +400,17 @@ export async function createRawMaterial(
   if (par_level < 0) return { error: "Par level cannot be negative." };
 
   const supabase = await createClient();
+
+  // Material code: typed, or auto-generated next RM-#### for this outlet.
+  let code = str(fd, "code");
+  if (!code) {
+    const locationId = await currentLocationId(supabase);
+    code = await nextMaterialCode(supabase, locationId);
+  }
+
   const { error } = await supabase.from("raw_materials").insert({
     name,
+    code: orNull(code),
     brand: orNull(str(fd, "brand")),
     purchase_unit,
     stock_unit,
@@ -355,10 +420,32 @@ export async function createRawMaterial(
     vendor_id: orNull(str(fd, "vendor_id")),
   });
 
-  if (error) return { error: error.message };
+  if (error) {
+    return {
+      error:
+        error.code === "23505"
+          ? `Material code "${code}" is already in use.`
+          : error.message,
+    };
+  }
 
   revalidatePath("/dashboard/admin/catalog");
   return { success: `Material "${name}" created.`, token: crypto.randomUUID() };
+}
+
+/** Next RM-#### after the highest already assigned in this outlet. */
+async function nextMaterialCode(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  locationId: string | null,
+): Promise<string> {
+  let q = supabase.from("raw_materials").select("code").like("code", "RM-%");
+  if (locationId) q = q.eq("location_id", locationId);
+  const { data } = await q;
+  const max = (data ?? []).reduce((m, r) => {
+    const v = parseInt(String(r.code ?? "").replace(/^RM-0*/, ""), 10);
+    return Number.isFinite(v) && v > m ? v : m;
+  }, 0);
+  return `RM-${String(max + 1).padStart(4, "0")}`;
 }
 
 export async function deleteRawMaterial(id: string): Promise<CatalogState> {
@@ -366,7 +453,14 @@ export async function deleteRawMaterial(id: string): Promise<CatalogState> {
   if (denied) return { error: denied };
 
   const supabase = await createClient();
-  const { error } = await supabase.from("raw_materials").delete().eq("id", id);
+  const home = await currentLocationId(supabase);
+  if (!home) return { error: "Your account isn't assigned to a location." };
+  const { data: deleted, error } = await supabase
+    .from("raw_materials")
+    .delete()
+    .eq("id", id)
+    .eq("location_id", home)
+    .select("id");
   if (error) {
     return {
       error:
@@ -375,11 +469,184 @@ export async function deleteRawMaterial(id: string): Promise<CatalogState> {
           : error.message,
     };
   }
+  if (!deleted || deleted.length === 0) {
+    return { error: "Material not found in your location." };
+  }
   revalidatePath("/dashboard/admin/catalog");
   return {};
 }
 
 // --- Recipes -----------------------------------------------------------------
+
+interface IngredientLine {
+  raw_material_id: string | null;
+  sub_recipe_id: string | null;
+  quantity_needed: number;
+  notes: string | null;
+}
+
+interface RecipeFields {
+  name: string;
+  selling_price: number;
+  yield_portions: number;
+  overhead_percentage: number;
+  category: string | null;
+  course: string | null;
+  video_url: string | null;
+  pos_item_code: string | null;
+  department_id: number | null;
+}
+
+/** Parse + harden the recipe form: header fields and the ingredients JSON. */
+function parseRecipeForm(
+  fd: FormData,
+): { fields: RecipeFields; ingredients: IngredientLine[] } | { error: string } {
+  const name = str(fd, "name");
+  const selling_price = Number(fd.get("selling_price") ?? 0);
+  const yield_portions = Math.floor(Number(fd.get("yield_portions") ?? 1));
+  const overhead_percentage = Number(fd.get("overhead_percentage") ?? 0);
+  const deptRaw = str(fd, "department_id");
+  const video = str(fd, "video_url");
+  if (!name) return { error: "Recipe name is required." };
+  if (!Number.isFinite(selling_price) || selling_price < 0 || selling_price >= 1e10)
+    return { error: "Selling price must be a valid non-negative number." };
+  if (!Number.isFinite(yield_portions) || yield_portions <= 0 || yield_portions > 10000)
+    return { error: "Yield portions must be at least 1." };
+  if (!Number.isFinite(overhead_percentage) || overhead_percentage < 0 || overhead_percentage > 1000)
+    return { error: "Overhead percentage must be between 0 and 1000." };
+  if (video && !/^https?:\/\/\S+$/i.test(video))
+    return { error: "Video link must be an http(s) URL." };
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(str(fd, "ingredients_json") || "[]");
+  } catch {
+    return { error: "Invalid ingredient rows." };
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0)
+    return { error: "Add at least one ingredient with a quantity." };
+  if (parsed.length > 200) return { error: "Too many ingredient rows." };
+
+  const ingredients: IngredientLine[] = [];
+  const seenMat = new Set<string>();
+  const seenSub = new Set<string>();
+  for (const raw of parsed) {
+    if (!raw || typeof raw !== "object") return { error: "Invalid ingredient rows." };
+    const l = raw as Record<string, unknown>;
+    const mat = typeof l.raw_material_id === "string" && l.raw_material_id ? l.raw_material_id : null;
+    const sub = typeof l.sub_recipe_id === "string" && l.sub_recipe_id ? l.sub_recipe_id : null;
+    const qty = Number(l.quantity_needed);
+    const notes = typeof l.notes === "string" ? l.notes.trim().slice(0, 500) : "";
+    if ((mat === null) === (sub === null))
+      return { error: "Every ingredient row needs a material OR a sub-recipe." };
+    if (!Number.isFinite(qty) || qty <= 0 || qty >= 1e10)
+      return { error: "Every ingredient quantity must be greater than zero." };
+    if (mat) {
+      if (seenMat.has(mat)) return { error: "Each material can only appear once." };
+      seenMat.add(mat);
+    }
+    if (sub) {
+      if (seenSub.has(sub)) return { error: "Each sub-recipe can only appear once." };
+      seenSub.add(sub);
+    }
+    ingredients.push({
+      raw_material_id: mat,
+      sub_recipe_id: sub,
+      quantity_needed: qty,
+      notes: notes || null,
+    });
+  }
+
+  return {
+    fields: {
+      name,
+      selling_price,
+      yield_portions,
+      overhead_percentage,
+      category: orNull(str(fd, "category")),
+      course: orNull(str(fd, "course")),
+      video_url: orNull(video),
+      pos_item_code: orNull(str(fd, "pos_item_code")),
+      department_id: deptRaw ? Math.floor(Number(deptRaw)) : null,
+    },
+    ingredients,
+  };
+}
+
+/** Department must belong to the caller's home location (else its sales vanish
+ *  from location-scoped views). Returns an error string or null. */
+async function validateRecipeRefs(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  home: string,
+  fields: RecipeFields,
+  ingredients: IngredientLine[],
+): Promise<string | null> {
+  if (fields.department_id != null) {
+    const { data: dep } = await supabase
+      .from("departments")
+      .select("id")
+      .eq("id", fields.department_id)
+      .eq("location_id", home)
+      .maybeSingle();
+    if (!dep) return "That department isn't in your location.";
+  }
+  const matIds = ingredients.filter((i) => i.raw_material_id).map((i) => i.raw_material_id as string);
+  if (matIds.length > 0) {
+    const { data } = await supabase
+      .from("raw_materials")
+      .select("id")
+      .in("id", [...new Set(matIds)])
+      .eq("location_id", home);
+    if ((data ?? []).length !== new Set(matIds).size)
+      return "One or more materials weren't found in your location.";
+  }
+  const subIds = ingredients.filter((i) => i.sub_recipe_id).map((i) => i.sub_recipe_id as string);
+  if (subIds.length > 0) {
+    const { data } = await supabase
+      .from("recipes")
+      .select("id")
+      .in("id", [...new Set(subIds)])
+      .eq("location_id", home);
+    if ((data ?? []).length !== new Set(subIds).size)
+      return "One or more sub-recipes weren't found in your location.";
+  }
+  return null;
+}
+
+/** Call the atomic save_recipe RPC and map its errors to friendly messages. */
+async function callSaveRecipe(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  recipeId: string | null,
+  fields: RecipeFields,
+  ingredients: IngredientLine[],
+): Promise<{ error: string } | { id: string }> {
+  const { data, error } = await supabase.rpc("save_recipe", {
+    p_recipe_id: recipeId,
+    p_fields: {
+      name: fields.name,
+      selling_price: String(fields.selling_price),
+      yield_portions: String(fields.yield_portions),
+      overhead_percentage: String(fields.overhead_percentage),
+      category: fields.category ?? "",
+      course: fields.course ?? "",
+      video_url: fields.video_url ?? "",
+      pos_item_code: fields.pos_item_code ?? "",
+      department_id: fields.department_id != null ? String(fields.department_id) : "",
+    },
+    p_ingredients: ingredients,
+  });
+  if (error) {
+    const msg = error.message ?? "";
+    if (msg.includes("CYCLE:"))
+      return { error: "That sub-recipe (directly or indirectly) contains this recipe — cycles aren't allowed." };
+    if (msg.includes("NOT_FOUND:")) return { error: "Recipe not found in your location." };
+    if (msg.includes("NO_INGREDIENTS:")) return { error: "Add at least one ingredient with a quantity." };
+    if (error.code === "23505")
+      return { error: `POS code "${fields.pos_item_code}" is already mapped to another recipe.` };
+    return { error: msg || "Failed to save the recipe." };
+  }
+  return { id: data as string };
+}
 
 export async function createRecipe(
   _prev: CatalogState | undefined,
@@ -388,82 +655,69 @@ export async function createRecipe(
   const denied = await guard();
   if (denied) return { error: denied };
 
-  const name = str(fd, "name");
-  const selling_price = Number(fd.get("selling_price") ?? 0);
-  const yield_portions = Math.floor(Number(fd.get("yield_portions") ?? 1));
-  const overhead_percentage = Number(fd.get("overhead_percentage") ?? 0);
-  const category = orNull(str(fd, "category"));
-  const deptRaw = str(fd, "department_id");
-  const department_id = deptRaw ? Math.floor(Number(deptRaw)) : null;
-  if (!name) return { error: "Recipe name is required." };
-  if (selling_price < 0) return { error: "Selling price cannot be negative." };
-  if (!(yield_portions > 0))
-    return { error: "Yield portions must be at least 1." };
-  if (overhead_percentage < 0)
-    return { error: "Overhead percentage cannot be negative." };
-
-  // Zip the parallel ingredient_material / ingredient_qty arrays.
-  const materialIds = fd.getAll("ingredient_material").map(String);
-  const quantities = fd.getAll("ingredient_qty").map((v) => Number(v));
-  const ingredients = materialIds
-    .map((mId, i) => ({ raw_material_id: mId, quantity_needed: quantities[i] }))
-    .filter((x) => x.raw_material_id && x.quantity_needed > 0);
-
-  if (ingredients.length === 0)
-    return { error: "Add at least one ingredient with a quantity." };
-
-  const seen = new Set<string>();
-  for (const ing of ingredients) {
-    if (seen.has(ing.raw_material_id))
-      return { error: "Each ingredient can only appear once." };
-    seen.add(ing.raw_material_id);
-  }
+  const parsed = parseRecipeForm(fd);
+  if ("error" in parsed) return { error: parsed.error };
+  const { fields, ingredients } = parsed;
 
   const supabase = await createClient();
+  const home = await currentLocationId(supabase);
+  if (!home) return { error: "Your account isn't assigned to a location." };
+  const refErr = await validateRecipeRefs(supabase, home, fields, ingredients);
+  if (refErr) return { error: refErr };
 
-  // A picked department must belong to the caller's (home) location, otherwise
-  // the recipe's sales would silently drop out of the location-scoped views.
-  if (department_id != null) {
-    const { data: home } = await supabase.rpc("current_location_id");
-    const { data: dep } = await supabase
-      .from("departments")
-      .select("id")
-      .eq("id", department_id)
-      .eq("location_id", (home as string | null) ?? "")
-      .maybeSingle();
-    if (!dep) return { error: "That department isn't in your location." };
-  }
-
-  const { data: recipe, error } = await supabase
-    .from("recipes")
-    .insert({
-      name,
-      selling_price,
-      yield_portions,
-      overhead_percentage,
-      category,
-      department_id,
-    })
-    .select("id")
-    .single();
-
-  if (error || !recipe) return { error: error?.message ?? "Failed to create recipe." };
-
-  const { error: ingError } = await supabase.from("recipe_ingredients").insert(
-    ingredients.map((ing) => ({ recipe_id: recipe.id, ...ing })),
-  );
-
-  if (ingError) {
-    // Roll back the orphan recipe so the operation is all-or-nothing.
-    await supabase.from("recipes").delete().eq("id", recipe.id);
-    return { error: ingError.message };
-  }
+  // Atomic: header + ingredients + cycle check commit or roll back together.
+  const saved = await callSaveRecipe(supabase, null, fields, ingredients);
+  if ("error" in saved) return { error: saved.error };
 
   revalidatePath("/dashboard/admin/catalog");
+  revalidatePath("/dashboard/admin/recipes");
   return {
-    success: `Recipe "${name}" created with ${ingredients.length} ingredient${ingredients.length === 1 ? "" : "s"}.`,
+    success: `Recipe "${fields.name}" created with ${ingredients.length} ingredient${ingredients.length === 1 ? "" : "s"}.`,
     token: crypto.randomUUID(),
   };
+}
+
+/**
+ * Update a recipe (header + full ingredient replacement) via the ATOMIC
+ * save_recipe RPC: header update, delete+re-insert of ingredient rows, and the
+ * sub-recipe cycle check run in ONE transaction under a per-location advisory
+ * lock. A committed cycle would silently TRUNCATE recipe_cogs (undercosted
+ * COGS) and push every POS sale of the dish to unmapped_sales — the in-DB
+ * post-insert check under the lock makes that unreachable.
+ */
+export async function updateRecipe(
+  _prev: CatalogState | undefined,
+  fd: FormData,
+): Promise<CatalogState> {
+  const denied = await guard();
+  if (denied) return { error: denied };
+
+  const id = str(fd, "recipe_id");
+  if (!id) return { error: "Missing recipe." };
+
+  const parsed = parseRecipeForm(fd);
+  if ("error" in parsed) return { error: parsed.error };
+  const { fields, ingredients } = parsed;
+
+  const supabase = await createClient();
+  const home = await currentLocationId(supabase);
+  if (!home) return { error: "Your account isn't assigned to a location." };
+
+  const refErr = await validateRecipeRefs(supabase, home, fields, ingredients);
+  if (refErr) return { error: refErr };
+
+  // Fast-path guard for the trivial case (friendlier than the RPC error).
+  if (ingredients.some((i) => i.sub_recipe_id === id)) {
+    return { error: "A recipe can't contain itself." };
+  }
+
+  const saved = await callSaveRecipe(supabase, id, fields, ingredients);
+  if ("error" in saved) return { error: saved.error };
+
+  revalidatePath("/dashboard/admin/catalog");
+  revalidatePath("/dashboard/admin/recipes");
+  revalidatePath(`/dashboard/admin/recipes/${id}`);
+  return { success: `Recipe "${fields.name}" updated (${ingredients.length} ingredient${ingredients.length === 1 ? "" : "s"}).`, token: crypto.randomUUID() };
 }
 
 export async function deleteRecipe(id: string): Promise<CatalogState> {
@@ -471,14 +725,24 @@ export async function deleteRecipe(id: string): Promise<CatalogState> {
   if (denied) return { error: denied };
 
   const supabase = await createClient();
-  const { error } = await supabase.from("recipes").delete().eq("id", id);
+  const home = await currentLocationId(supabase);
+  if (!home) return { error: "Your account isn't assigned to a location." };
+  const { data: deleted, error } = await supabase
+    .from("recipes")
+    .delete()
+    .eq("id", id)
+    .eq("location_id", home)
+    .select("id");
   if (error) {
     return {
       error:
         error.code === "23503"
-          ? "Can't delete: this recipe has recorded sales."
+          ? "Can't delete: this recipe has recorded sales or is a sub-recipe of another dish."
           : error.message,
     };
+  }
+  if (!deleted || deleted.length === 0) {
+    return { error: "Recipe not found in your location." };
   }
   revalidatePath("/dashboard/admin/catalog");
   return {};

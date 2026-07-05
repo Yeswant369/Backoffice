@@ -10,6 +10,7 @@ import {
   inputCls,
   type Feedback,
 } from "../_components/forms";
+import Combobox from "../_components/Combobox";
 import type { RecipeOption } from "./types";
 
 interface Props {
@@ -69,23 +70,25 @@ export default function SimulateSaleForm({ supabase, recipes }: Props) {
       type: "success",
       message: `Logged ${qtyNum} × ${recipe?.name}. Ingredients deducted from Kitchen.`,
     });
+    // Clear the dish so a second blind click can never double-deduct stock.
+    setRecipeId("");
+    setQty("1");
   }
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
       <Field label="Dish">
-        <select
+        <Combobox
+          name="recipe_id"
           value={recipeId}
-          onChange={(e) => setRecipeId(e.target.value)}
-          className={inputCls}
-        >
-          <option value="">Select dish…</option>
-          {recipes.map((r) => (
-            <option key={r.id} value={r.id}>
-              {r.name}
-            </option>
-          ))}
-        </select>
+          onChange={setRecipeId}
+          placeholder="Type to search…"
+          options={recipes.map((r) => ({
+            id: r.id,
+            label: r.name,
+            hint: r.selling_price != null ? `₹${r.selling_price}` : undefined,
+          }))}
+        />
       </Field>
 
       <div className="grid gap-4 sm:grid-cols-2">

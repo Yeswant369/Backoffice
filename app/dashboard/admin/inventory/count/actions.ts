@@ -129,6 +129,7 @@ export async function submitStockCount(
             to_department_id: departmentId,
             type: "VARIANCE_RECONCILIATION",
             quantity: delta,
+            transaction_date: today, // count's business day (daily-closing precision)
           }
         : {
             location_id: loc,
@@ -137,6 +138,7 @@ export async function submitStockCount(
             to_department_id: null,
             type: "VARIANCE_RECONCILIATION",
             quantity: -delta,
+            transaction_date: today,
           };
     })
     .filter(Boolean) as Record<string, unknown>[];
@@ -288,9 +290,47 @@ export async function pullStockCount(
     .upsert(rows, { onConflict: "location_id,department_id,raw_material_id,count_date" });
   if (error) return { error: error.message };
 
+  // Reconcile exactly like the in-app count: post VARIANCE_RECONCILIATION so
+  // the ledger snaps to the counted quantities. Without this, a sheet-pulled
+  // count shows a "counted" day whose closing balance was never corrected —
+  // the daily-costing model's premise (closing = the count) would be false.
+  const adjustments = rows
+    .map((r) => {
+      const delta = r.actual_qty - r.system_qty;
+      if (Math.abs(delta) < 1e-9) return null;
+      return delta > 0
+        ? {
+            location_id: loc,
+            raw_material_id: r.raw_material_id,
+            from_department_id: null,
+            to_department_id: r.department_id,
+            type: "VARIANCE_RECONCILIATION",
+            quantity: delta,
+            transaction_date: today,
+          }
+        : {
+            location_id: loc,
+            raw_material_id: r.raw_material_id,
+            from_department_id: r.department_id,
+            to_department_id: null,
+            type: "VARIANCE_RECONCILIATION",
+            quantity: -delta,
+            transaction_date: today,
+          };
+    })
+    .filter(Boolean) as Record<string, unknown>[];
+  if (adjustments.length > 0) {
+    const { error: adjErr } = await supabase
+      .from("inventory_ledger")
+      .insert(adjustments);
+    if (adjErr)
+      return { error: `Counts saved, but stock reconciliation failed: ${adjErr.message}` };
+  }
+
   revalidatePath("/dashboard/admin/inventory/count");
   revalidatePath("/dashboard/admin/analytics/variance");
+  revalidatePath("/dashboard/admin/inventory/live-stock");
   return {
-    success: `Pulled ${rows.length} count${rows.length === 1 ? "" : "s"} from the sheet${unmatched ? ` · ${unmatched} unmatched` : ""}.`,
+    success: `Pulled ${rows.length} count${rows.length === 1 ? "" : "s"} from the sheet and reconciled stock${unmatched ? ` · ${unmatched} unmatched` : ""}.`,
   };
 }

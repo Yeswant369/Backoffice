@@ -18,6 +18,7 @@ export interface VendorOption {
 
 export interface RawMaterialOption {
   id: string;
+  code: string | null;
   name: string;
   brand: string | null;
   purchase_unit: string;

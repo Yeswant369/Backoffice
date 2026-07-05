@@ -22,7 +22,7 @@ export default async function StorePage() {
     supabase
       .from("raw_materials")
       .select(
-        "id, name, brand, purchase_unit, stock_unit, conversion_factor, vendor_id, category",
+        "id, code, name, brand, purchase_unit, stock_unit, conversion_factor, vendor_id, category",
       )
       .order("name"),
     supabase.from("departments").select("id, name").order("id"),

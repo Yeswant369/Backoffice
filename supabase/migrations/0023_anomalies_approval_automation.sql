@@ -21,28 +21,38 @@ alter table public.vendors add column if not exists approved_at timestamptz;
 alter table public.vendors add column if not exists approved_by uuid references public.profiles (id) on delete set null;
 
 -- B. kitchen_production_view — sold qty preferred from actual sales volume.
-create or replace view public.kitchen_production_view with (security_invoker = on) as
-select
-  kp.id, kp.location_id, kp.production_date,
-  kp.department_id, d.name as department_name,
-  kp.recipe_id, r.name as recipe_name,
-  kp.prepared_qty,
-  coalesce(rsv.portions, kp.sold_qty)::numeric(14,3) as sold_qty,
-  kp.wastage_qty,
-  (kp.prepared_qty - coalesce(rsv.portions, kp.sold_qty) - kp.wastage_qty) as variance,
-  r.selling_price,
-  round(public.recipe_cogs(kp.recipe_id), 2)                 as unit_cost,
-  round(kp.wastage_qty * public.recipe_cogs(kp.recipe_id), 2) as wastage_cost,
-  kp.notes
-from public.kitchen_production kp
-join public.recipes r on r.id = kp.recipe_id
-left join public.departments d on d.id = kp.department_id and d.location_id = kp.location_id
-left join public.recipe_sales_volume rsv
-  on rsv.recipe_id = kp.recipe_id and rsv.location_id = kp.location_id
- and rsv.sold_on = kp.production_date
- -- attach sales only to the row in the recipe's OWN department, so a recipe
- -- prepared in two departments never has the full sales broadcast to both.
- and kp.department_id = r.department_id;
+-- Skip when the FINAL (0032) view shape already exists — create-or-replace
+-- cannot drop columns, and the hero 0000 fold ships the final shape.
+do $kpv$ begin
+  if not exists (
+    select 1 from information_schema.columns
+     where table_schema='public' and table_name='kitchen_production_view'
+       and column_name='staff_meals_qty'
+  ) then
+  create or replace view public.kitchen_production_view with (security_invoker = on) as
+  select
+    kp.id, kp.location_id, kp.production_date,
+    kp.department_id, d.name as department_name,
+    kp.recipe_id, r.name as recipe_name,
+    kp.prepared_qty,
+    coalesce(rsv.portions, kp.sold_qty)::numeric(14,3) as sold_qty,
+    kp.wastage_qty,
+    (kp.prepared_qty - coalesce(rsv.portions, kp.sold_qty) - kp.wastage_qty) as variance,
+    r.selling_price,
+    round(public.recipe_cogs(kp.recipe_id), 2)                 as unit_cost,
+    round(kp.wastage_qty * public.recipe_cogs(kp.recipe_id), 2) as wastage_cost,
+    kp.notes
+  from public.kitchen_production kp
+  join public.recipes r on r.id = kp.recipe_id
+  left join public.departments d on d.id = kp.department_id and d.location_id = kp.location_id
+  left join public.recipe_sales_volume rsv
+    on rsv.recipe_id = kp.recipe_id and rsv.location_id = kp.location_id
+   and rsv.sold_on = kp.production_date
+   -- attach sales only to the row in the recipe's OWN department, so a recipe
+   -- prepared in two departments never has the full sales broadcast to both.
+   and kp.department_id = r.department_id;
+  end if;
+end $kpv$;
 
 -- C. anomalies — typed, rule-based flags from existing data. security_invoker.
 create or replace view public.anomalies with (security_invoker = on) as

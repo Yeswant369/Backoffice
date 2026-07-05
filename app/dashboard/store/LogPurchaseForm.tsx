@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { inr } from "@/lib/format";
 import { triggerSheetSync } from "@/lib/sheet-sync-client";
+import Combobox from "../_components/Combobox";
 import {
   Field,
   FormFeedback,
@@ -90,34 +91,31 @@ export default function LogPurchaseForm({
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
       <Field label="Raw material">
-        <select
+        <Combobox
+          name="raw_material_id"
           value={materialId}
-          onChange={(e) => handleMaterialChange(e.target.value)}
-          className={inputCls}
-        >
-          <option value="">Select material…</option>
-          {materials.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.name}
-              {m.brand ? ` · ${m.brand}` : ""}
-            </option>
-          ))}
-        </select>
+          onChange={handleMaterialChange}
+          placeholder="Type to search materials…"
+          options={materials.map((m) => ({
+            id: m.id,
+            label: m.brand ? `${m.name} · ${m.brand}` : m.name,
+            hint: m.code ?? m.stock_unit,
+          }))}
+        />
       </Field>
 
       <Field label="Vendor">
-        <select
+        <Combobox
+          name="vendor_id"
           value={vendorId}
-          onChange={(e) => setVendorId(e.target.value)}
-          className={inputCls}
-        >
-          <option value="">Select vendor…</option>
-          {vendors.map((v) => (
-            <option key={v.id} value={v.id}>
-              {v.name} ({v.vendor_code})
-            </option>
-          ))}
-        </select>
+          onChange={setVendorId}
+          placeholder="Type to search vendors…"
+          options={vendors.map((v) => ({
+            id: v.id,
+            label: v.name,
+            hint: v.vendor_code,
+          }))}
+        />
       </Field>
 
       <div className="grid gap-4 sm:grid-cols-2">

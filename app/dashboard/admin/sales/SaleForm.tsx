@@ -8,6 +8,7 @@ import {
   inputCls,
   type Feedback,
 } from "../../_components/forms";
+import Combobox from "../../_components/Combobox";
 import { recordManualSale, type SaleState } from "./actions";
 import { triggerSheetSync } from "@/lib/sheet-sync-client";
 
@@ -32,11 +33,8 @@ export default function SaleForm({ recipes }: { recipes: RecipeLite[] }) {
   const formRef = useRef<HTMLFormElement>(null);
 
   useEffect(() => {
-    if (state?.success) {
-      formRef.current?.reset();
-      void triggerSheetSync();
-    }
-  }, [state?.success, state?.token]);
+    if (state?.token) void triggerSheetSync();
+  }, [state?.token]);
 
   const feedback: Feedback | null = state?.error
     ? { type: "error", message: state.error }
@@ -45,7 +43,10 @@ export default function SaleForm({ recipes }: { recipes: RecipeLite[] }) {
       : null;
 
   return (
+    // key remount per success — form.reset() can't clear Combobox state, and a
+    // lingering dish must never be silently inherited by the next entry.
     <form
+      key={state?.token ?? "init"}
       ref={formRef}
       action={formAction}
       className="space-y-4 rounded-lg border border-[#e6e0d3] bg-[#f7f3ec] p-5"
@@ -59,16 +60,16 @@ export default function SaleForm({ recipes }: { recipes: RecipeLite[] }) {
         <>
           <div className="grid gap-4 sm:grid-cols-3">
             <Field label="Dish">
-              <select name="recipe_id" required defaultValue="" className={inputCls}>
-                <option value="" disabled>
-                  Select dish…
-                </option>
-                {recipes.map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {r.name}
-                  </option>
-                ))}
-              </select>
+              <Combobox
+                name="recipe_id"
+                required
+                placeholder="Type to search…"
+                options={recipes.map((r) => ({
+                  id: r.id,
+                  label: r.name,
+                  hint: `₹${r.selling_price}`,
+                }))}
+              />
             </Field>
             <Field label="Quantity sold">
               <input

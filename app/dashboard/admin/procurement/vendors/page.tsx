@@ -99,7 +99,14 @@ export default async function ProcurementVendorsPage() {
                   <td className="px-5 py-3.5 font-mono text-xs text-neutral-600">
                     {v.vendor_code}
                   </td>
-                  <td className="px-5 py-3.5 font-medium text-neutral-900">{v.name}</td>
+                  <td className="px-5 py-3.5">
+                    <Link
+                      href={`/dashboard/admin/procurement/vendors/${v.id}`}
+                      className="font-medium text-indigo-700 transition hover:text-indigo-500"
+                    >
+                      {v.name}
+                    </Link>
+                  </td>
                   <td className="px-5 py-3.5 text-neutral-600">
                     {v.contact_person ?? "—"}
                     {v.phone && (

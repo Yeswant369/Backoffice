@@ -8,6 +8,8 @@ import { ROLES, type RoleId } from "@/lib/roles";
 export interface ActionState {
   error?: string;
   success?: string;
+  /** Unique per success — lets forms reset reliably on EVERY submit. */
+  token?: string;
 }
 
 const MANAGERIAL: RoleId[] = [ROLES.ADMIN, ROLES.MANAGER];
@@ -47,7 +49,7 @@ export async function logPettyCash(
   if (error) return { error: error.message };
 
   revalidatePath("/dashboard/manager");
-  return { success: `Logged ${category} expense.` };
+  return { success: `Logged ${category} expense.`, token: crypto.randomUUID() };
 }
 
 /**
@@ -79,5 +81,5 @@ export async function logSale(
   if (error) return { error: error.message };
 
   revalidatePath("/dashboard/manager");
-  return { success: `Logged ${quantitySold} sale(s). Kitchen stock deducted.` };
+  return { success: `Logged ${quantitySold} sale(s). Kitchen stock deducted.`, token: crypto.randomUUID() };
 }

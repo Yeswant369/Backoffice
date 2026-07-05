@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { triggerSheetSync } from "@/lib/sheet-sync-client";
+import Combobox from "../_components/Combobox";
 import {
   Field,
   FormFeedback,
@@ -94,19 +95,17 @@ export default function IssueForm({
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
       <Field label="Raw material">
-        <select
+        <Combobox
+          name="raw_material_id"
           value={materialId}
-          onChange={(e) => setMaterialId(e.target.value)}
-          className={inputCls}
-        >
-          <option value="">Select material…</option>
-          {materials.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.name}
-              {m.brand ? ` · ${m.brand}` : ""}
-            </option>
-          ))}
-        </select>
+          onChange={setMaterialId}
+          placeholder="Type to search materials…"
+          options={materials.map((m) => ({
+            id: m.id,
+            label: m.brand ? `${m.name} · ${m.brand}` : m.name,
+            hint: m.code ?? m.stock_unit,
+          }))}
+        />
       </Field>
 
       <div className="grid gap-4 sm:grid-cols-2">

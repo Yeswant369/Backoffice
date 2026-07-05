@@ -1,6 +1,7 @@
 "use client";
 
 import { useActionState, useEffect, useRef } from "react";
+import Link from "next/link";
 import {
   Field,
   FormFeedback,
@@ -8,6 +9,7 @@ import {
   inputCls,
   type Feedback,
 } from "../../_components/forms";
+import Combobox from "../../_components/Combobox";
 import {
   createRawMaterial,
   deleteRawMaterial,
@@ -54,7 +56,11 @@ export default function MaterialPanel({
     <div className="space-y-6">
       <RawMaterialsWorkspace connected={connected} sheetUrl={sheetUrl} />
 
+      {/* key remount per success — form.reset() can't clear the vendor
+          Combobox's state, and a lingering vendor would silently attach to
+          every subsequent material. */}
       <form
+        key={state?.token ?? "init"}
         ref={formRef}
         action={formAction}
         className="space-y-4 rounded-lg border border-[#e6e0d3] bg-[#f7f3ec] p-5"
@@ -63,6 +69,9 @@ export default function MaterialPanel({
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Name">
             <input name="name" required placeholder="Basmati Rice" className={inputCls} />
+          </Field>
+          <Field label="Code" hint="Leave blank to auto-number">
+            <input name="code" placeholder="auto e.g. RM-0012" className={inputCls} />
           </Field>
           <Field label="Brand" hint="Optional">
             <input name="brand" placeholder="India Gate" className={inputCls} />
@@ -98,14 +107,15 @@ export default function MaterialPanel({
             <input name="category" placeholder="Grains" className={inputCls} />
           </Field>
           <Field label="Default vendor" hint="Optional">
-            <select name="vendor_id" defaultValue="" className={inputCls}>
-              <option value="">— none —</option>
-              {vendors.map((v) => (
-                <option key={v.id} value={v.id}>
-                  {v.name} ({v.vendor_code})
-                </option>
-              ))}
-            </select>
+            <Combobox
+              name="vendor_id"
+              placeholder="Type to search…"
+              options={vendors.map((v) => ({
+                id: v.id,
+                label: v.name,
+                hint: v.vendor_code,
+              }))}
+            />
           </Field>
         </div>
         <FormFeedback feedback={feedback} />
@@ -132,6 +142,7 @@ export default function MaterialPanel({
             <thead>
               <tr className="text-[11px] uppercase tracking-wider text-neutral-500">
                 <th className="px-5 py-2.5 font-medium">Material</th>
+                <th className="px-5 py-2.5 font-medium">Code</th>
                 <th className="px-5 py-2.5 font-medium">Units</th>
                 <th className="px-5 py-2.5 text-right font-medium">Par</th>
                 <th className="px-5 py-2.5 font-medium">Vendor</th>
@@ -143,7 +154,12 @@ export default function MaterialPanel({
                 <tr key={m.id} className="border-t border-[#e6e0d3]">
                   <td className="px-5 py-2.5">
                     <div className="flex items-center gap-2">
-                      <span className="font-medium text-neutral-900">{m.name}</span>
+                      <Link
+                        href={`/dashboard/admin/materials/${m.id}`}
+                        className="font-medium text-indigo-700 hover:text-indigo-500"
+                      >
+                        {m.name}
+                      </Link>
                       {m.needs_review && (
                         <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/30 bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-amber-700">
                           <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
@@ -156,6 +172,9 @@ export default function MaterialPanel({
                         {[m.brand, m.category].filter(Boolean).join(" · ")}
                       </div>
                     )}
+                  </td>
+                  <td className="px-5 py-2.5 font-mono text-xs text-neutral-600">
+                    {m.code ?? "—"}
                   </td>
                   <td className="px-5 py-2.5 text-neutral-600">
                     1 {m.purchase_unit} = {m.conversion_factor} {m.stock_unit}

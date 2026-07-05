@@ -83,10 +83,10 @@ export default async function VariancePage({
       .from("unmapped_sales")
       .select("id", { count: "exact", head: true })
       .eq("resolved", false),
-    supabase.from("recipes").select("id, name").order("name"),
+    supabase.from("recipes").select("id, name, selling_price").order("name"),
   ]);
   const openUnmappedCount = unmappedCountRes.count ?? (unmappedRes.data ?? []).length;
-  const recipes = (recipesRes.data ?? []) as { id: string; name: string }[];
+  const recipes = (recipesRes.data ?? []) as { id: string; name: string; selling_price: number }[];
 
   const loadError = varRes.error || matRes.error;
 

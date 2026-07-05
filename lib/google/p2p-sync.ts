@@ -17,6 +17,7 @@ interface PurchaseRow {
   unit_price: number | null;
   raw_materials: JoinedMaterial | null;
   vendors: { name: string } | null;
+  purchase_bills: { invoice_no: string | null } | null;
 }
 interface TransferRow {
   created_at: string;
@@ -29,8 +30,11 @@ interface TransferRow {
 
 /**
  * Ensure a tab exists with headers, then APPEND only rows that aren't already
- * there (matched by row count). Existing rows — including manual edits like
- * Invoice # — are never overwritten.
+ * there (matched by row count). Existing rows are normally never overwritten —
+ * EXCEPT when the header SHAPE changed (e.g. the Bill No column was added):
+ * appending wider rows under an old narrower header would permanently misalign
+ * every new row, so a header mismatch triggers a one-time full rewrite from the
+ * DB (the ledger is the source of truth; rows regenerate losslessly).
  */
 async function appendByCount(
   sheets: sheets_v4.Sheets,
@@ -43,6 +47,15 @@ async function appendByCount(
   await ensureTab(sheets, sid, title, existing);
   const grid = await readGrid(sheets, sid, title);
   if (grid.length === 0) {
+    await writeGrid(sheets, sid, title, [headers, ...allRows]);
+    return allRows.length;
+  }
+  const currentHeader = (grid[0] ?? []).map((c) => String(c ?? "").trim());
+  const headerMatches =
+    currentHeader.length === headers.length &&
+    headers.every((h, i) => currentHeader[i] === h);
+  if (!headerMatches) {
+    // Schema migration: rewrite the whole tab in the new shape.
     await writeGrid(sheets, sid, title, [headers, ...allRows]);
     return allRows.length;
   }
@@ -74,7 +87,7 @@ function buildSummary(purchases: PurchaseRow[]): string[][] {
 }
 
 const PURCHASE_HEADERS = [
-  "Date", "Vendor Name", "Material Name", "Qty", "Unit", "Unit Price", "Line Total", "Invoice #",
+  "Date", "Bill No", "Vendor Name", "Material Name", "Qty", "Unit", "Unit Price", "Line Total",
 ];
 const SUMMARY_HEADERS = ["Month", "Total Spend", "Top Vendor"];
 const ISSUE_HEADERS = [
@@ -97,13 +110,14 @@ export async function syncProcurementTabs(
       supabase
         .from("inventory_ledger")
         .select(
-          "created_at, transaction_date, quantity, unit_price, raw_materials ( name, stock_unit ), vendors ( name )",
+          "created_at, transaction_date, quantity, unit_price, raw_materials ( name, stock_unit ), vendors ( name ), purchase_bills ( invoice_no )",
         )
         .eq("type", "PURCHASE")
         .eq("location_id", locationId)
         // Order by created_at (insertion order) — NOT transaction_date — so the
         // append-by-count stays stable even when invoices are backdated.
-        .order("created_at", { ascending: true }),
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true }),
       supabase
         .from("inventory_ledger")
         .select(
@@ -111,7 +125,8 @@ export async function syncProcurementTabs(
         )
         .in("type", ["INTER_DEPARTMENT_TRANSFER", "ISSUE_TO_KITCHEN"])
         .eq("location_id", locationId)
-        .order("created_at", { ascending: true }),
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true }),
       supabase.from("departments").select("id, name").eq("location_id", locationId),
       supabase.from("profiles").select("id, full_name").eq("location_id", locationId),
     ]);
@@ -130,13 +145,13 @@ export async function syncProcurementTabs(
     const price = n(p.unit_price);
     return [
       fmtDate(p.transaction_date ?? p.created_at),
+      p.purchase_bills?.invoice_no ?? "",
       p.vendors?.name ?? "",
       p.raw_materials?.name ?? "",
       String(qty),
       p.raw_materials?.stock_unit ?? "",
       price.toFixed(2),
       (qty * price).toFixed(2),
-      "",
     ];
   });
   const purchasesSynced = await appendByCount(

@@ -99,9 +99,16 @@ export async function logPurchase(
 
   if (!raw_material_id) return { error: "Select a raw material." };
   if (!vendor_id) return { error: "Select a vendor." };
-  if (!(quantity > 0)) return { error: "Quantity must be greater than zero." };
-  if (unit_price < 0) return { error: "Unit price cannot be negative." };
+  if (!Number.isFinite(quantity) || quantity <= 0 || quantity >= 1e10) {
+    return { error: "Quantity must be a number greater than zero." };
+  }
+  if (!Number.isFinite(unit_price) || unit_price < 0 || unit_price >= 1e10) {
+    return { error: "Unit price must be a valid non-negative number." };
+  }
   if (!transaction_date) return { error: "Select a valid invoice date." };
+  const todayISTSingle = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date());
+  if (transaction_date > todayISTSingle) return { error: "Invoice date cannot be in the future." };
+  if (transaction_date < "2000-01-01") return { error: "Invoice date looks wrong." };
 
   const supabase = await createClient();
   const loc = await locationId(supabase);
@@ -119,6 +126,16 @@ export async function logPurchase(
   if (!(vend as { approved: boolean }).approved) {
     return { error: "This vendor isn't approved yet — approve it in the Vendor Hub first." };
   }
+
+  // Pin the material to this location too — a crafted/stale id must never
+  // write a cross-outlet ledger row.
+  const { data: mat } = await supabase
+    .from("raw_materials")
+    .select("id")
+    .eq("id", raw_material_id)
+    .eq("location_id", loc)
+    .maybeSingle();
+  if (!mat) return { error: "Raw material not found in your location." };
 
   // Store department for THIS location (pin — RLS spans the org for hybrids).
   const { data: store } = await supabase
@@ -145,6 +162,166 @@ export async function logPurchase(
 
   revalidatePath("/dashboard/admin/procurement/purchase-log");
   return { success: "Purchase logged to the ledger.", token: crypto.randomUUID() };
+}
+
+interface BillLine {
+  raw_material_id: string;
+  quantity: number;
+  unit_price: number;
+}
+
+/**
+ * Log a multi-line purchase BILL: one vendor, one invoice number, optional bill
+ * and delivered-goods photos, many material lines — one purchase_bills row plus
+ * one immutable PURCHASE ledger row per line (all linked via bill_id).
+ */
+export async function logPurchaseBill(
+  _prev: ActionState | undefined,
+  fd: FormData,
+): Promise<ActionState> {
+  const { user, roles } = await getCurrentUserAndRoles();
+  if (!user || !(roles.includes(1) || roles.includes(2) || roles.includes(3))) {
+    return { error: "You are not authorized to log purchases." };
+  }
+
+  const vendor_id = str(fd, "vendor_id");
+  const invoice_no = orNull(str(fd, "invoice_no"));
+  const purchase_date = str(fd, "purchase_date");
+  const transaction_date = /^\d{4}-\d{2}-\d{2}$/.test(purchase_date)
+    ? purchase_date
+    : null;
+  if (!vendor_id) return { error: "Select a vendor." };
+  if (!transaction_date) return { error: "Select a valid bill date." };
+  // Business-date sanity: no future bills, no ancient typos (client max= is not
+  // a control). IST calendar day.
+  const todayIST = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date());
+  if (transaction_date > todayIST) return { error: "Bill date cannot be in the future." };
+  if (transaction_date < "2000-01-01") return { error: "Bill date looks wrong." };
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(str(fd, "lines"));
+  } catch {
+    return { error: "Invalid line items." };
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0) {
+    return { error: "Add at least one line item." };
+  }
+  if (parsed.length > 100) return { error: "Too many lines on one bill." };
+  // Coerce + validate every element — JSON can smuggle null/strings/1e999,
+  // which Number() would pass through the old >0/<0 checks as Infinity/NaN and
+  // then serialize to NULL in the insert (silently corrupting spend).
+  const MAX = 1e10; // numeric(14,4) ceiling
+  const lines: BillLine[] = [];
+  for (const raw of parsed) {
+    if (!raw || typeof raw !== "object") return { error: "Invalid line items." };
+    const l = raw as Record<string, unknown>;
+    const raw_material_id = typeof l.raw_material_id === "string" ? l.raw_material_id : "";
+    const quantity = Number(l.quantity);
+    const unit_price = Number(l.unit_price);
+    if (!raw_material_id) return { error: "Every line needs a material." };
+    if (!Number.isFinite(quantity) || quantity <= 0 || quantity >= MAX) {
+      return { error: "Every quantity must be a number greater than zero." };
+    }
+    if (!Number.isFinite(unit_price) || unit_price < 0 || unit_price >= MAX) {
+      return { error: "Unit prices must be valid non-negative numbers." };
+    }
+    lines.push({ raw_material_id, quantity, unit_price });
+  }
+
+  const supabase = await createClient();
+  const loc = await locationId(supabase);
+  if (!loc) return { error: "Your account isn't assigned to a location." };
+
+  // Photos were uploaded straight to storage by the browser; only accept paths
+  // inside THIS outlet's folder (matches the storage RLS, defense-in-depth).
+  // An invalid non-empty path is an ERROR — silently dropping it would save the
+  // bill while the user believes the photo evidence was attached.
+  const photoPath = (key: string): { ok: true; path: string | null } | { ok: false } => {
+    const p = str(fd, key);
+    if (!p) return { ok: true, path: null };
+    return p.startsWith(`${loc}/`) && !p.includes("..")
+      ? { ok: true, path: p }
+      : { ok: false };
+  };
+  const billPhoto = photoPath("bill_photo_path");
+  const deliveryPhoto = photoPath("delivery_photo_path");
+  if (!billPhoto.ok || !deliveryPhoto.ok) {
+    return { error: "Invalid photo reference — retake the photo and try again." };
+  }
+
+  // Vendor: home + approved (dropdown filtering is not a control).
+  const { data: vend } = await supabase
+    .from("vendors")
+    .select("id, approved")
+    .eq("id", vendor_id)
+    .eq("location_id", loc)
+    .maybeSingle();
+  if (!vend) return { error: "Vendor not found in your location." };
+  if (!(vend as { approved: boolean }).approved) {
+    return { error: "This vendor isn't approved yet — approve it in the Vendor Hub first." };
+  }
+
+  // Every material must belong to this outlet.
+  const ids = [...new Set(lines.map((l) => l.raw_material_id))];
+  const { data: mats } = await supabase
+    .from("raw_materials")
+    .select("id")
+    .in("id", ids)
+    .eq("location_id", loc);
+  if ((mats ?? []).length !== ids.length) {
+    return { error: "One or more materials weren't found in your location." };
+  }
+
+  const { data: store } = await supabase
+    .from("departments")
+    .select("id")
+    .eq("location_id", loc)
+    .ilike("name", "store")
+    .maybeSingle();
+
+  const { data: bill, error: billErr } = await supabase
+    .from("purchase_bills")
+    .insert({
+      location_id: loc,
+      vendor_id,
+      invoice_no,
+      bill_date: transaction_date,
+      bill_photo_path: billPhoto.path,
+      delivery_photo_path: deliveryPhoto.path,
+      created_by: user.id,
+    })
+    .select("id")
+    .single();
+  if (billErr || !bill) return { error: billErr?.message ?? "Could not save the bill." };
+
+  const { error: linesErr } = await supabase.from("inventory_ledger").insert(
+    lines.map((l) => ({
+      raw_material_id: l.raw_material_id,
+      vendor_id,
+      from_department_id: null,
+      to_department_id: store?.id ?? null,
+      type: "PURCHASE" as const,
+      quantity: Number(l.quantity),
+      unit_price: Number(l.unit_price),
+      transaction_date,
+      bill_id: bill.id,
+      location_id: loc,
+      created_by: user.id,
+    })),
+  );
+  if (linesErr) {
+    // Ledger lines failed. Bills are append-only (no delete policy), so the
+    // header row stays — harmless: every read joins FROM the ledger, so a bill
+    // with zero lines never surfaces anywhere.
+    return { error: linesErr.message };
+  }
+
+  revalidatePath("/dashboard/admin/procurement/purchase-log");
+  return {
+    success: `Bill logged — ${lines.length} item(s).`,
+    token: crypto.randomUUID(),
+  };
 }
 
 /**

@@ -10,6 +10,7 @@ import {
   inputCls,
   type Feedback,
 } from "../_components/forms";
+import Combobox from "../_components/Combobox";
 import type { LiveStockRow, RawMaterialOption } from "./types";
 
 // App-level "enum" of wastage reasons (stored in the wastage_reason varchar).
@@ -92,19 +93,17 @@ export default function WastageForm({
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
       <Field label="Raw material">
-        <select
+        <Combobox
+          name="raw_material_id"
           value={materialId}
-          onChange={(e) => setMaterialId(e.target.value)}
-          className={inputCls}
-        >
-          <option value="">Select material…</option>
-          {materials.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.name}
-              {m.brand ? ` · ${m.brand}` : ""}
-            </option>
-          ))}
-        </select>
+          onChange={setMaterialId}
+          placeholder="Type to search…"
+          options={materials.map((m) => ({
+            id: m.id,
+            label: `${m.name}${m.brand ? ` · ${m.brand}` : ""}`,
+            hint: m.code ?? m.stock_unit,
+          }))}
+        />
       </Field>
 
       <div className="grid gap-4 sm:grid-cols-2">

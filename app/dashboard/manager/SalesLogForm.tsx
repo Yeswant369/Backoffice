@@ -8,6 +8,7 @@ import {
   inputCls,
   type Feedback,
 } from "../_components/forms";
+import Combobox from "../_components/Combobox";
 import { logSale, type ActionState } from "./actions";
 import { triggerSheetSync } from "@/lib/sheet-sync-client";
 
@@ -26,11 +27,8 @@ export default function SalesLogForm({ recipes }: { recipes: RecipeLite[] }) {
   const formRef = useRef<HTMLFormElement>(null);
 
   useEffect(() => {
-    if (state?.success) {
-      formRef.current?.reset();
-      void triggerSheetSync();
-    }
-  }, [state?.success]);
+    if (state?.token) void triggerSheetSync();
+  }, [state?.token]);
 
   const feedback: Feedback | null = state?.error
     ? { type: "error", message: state.error }
@@ -39,18 +37,21 @@ export default function SalesLogForm({ recipes }: { recipes: RecipeLite[] }) {
       : null;
 
   return (
-    <form ref={formRef} action={formAction} className="space-y-4">
+    // key remount per success — form.reset() can't clear Combobox state; a
+    // stale dish + defaulted qty would make a second blind click log a
+    // duplicate sale and double-deduct Kitchen stock.
+    <form key={state?.token ?? "init"} ref={formRef} action={formAction} className="space-y-4">
       <Field label="Dish">
-        <select name="recipe_id" required defaultValue="" className={inputCls}>
-          <option value="" disabled>
-            Select dish…
-          </option>
-          {recipes.map((r) => (
-            <option key={r.id} value={r.id}>
-              {r.name}
-            </option>
-          ))}
-        </select>
+        <Combobox
+          name="recipe_id"
+          required
+          placeholder="Type to search dishes…"
+          options={recipes.map((r) => ({
+            id: r.id,
+            label: r.name,
+            hint: `₹${r.selling_price}`,
+          }))}
+        />
       </Field>
 
       <div className="grid gap-4 sm:grid-cols-2">

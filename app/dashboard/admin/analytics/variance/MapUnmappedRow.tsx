@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import Combobox from "../../../_components/Combobox";
 import { mapAndReplay, type MapState } from "./actions";
 
 export default function MapUnmappedRow({
@@ -9,7 +10,7 @@ export default function MapUnmappedRow({
   recipes,
 }: {
   posItemCode: string | null;
-  recipes: { id: string; name: string }[];
+  recipes: { id: string; name: string; selling_price: number }[];
 }) {
   const router = useRouter();
   const [recipeId, setRecipeId] = useState("");
@@ -20,18 +21,19 @@ export default function MapUnmappedRow({
 
   return (
     <div className="flex flex-wrap items-center justify-end gap-2">
-      <select
-        value={recipeId}
-        onChange={(e) => setRecipeId(e.target.value)}
-        className="rounded-md border border-[#d9d1c1] bg-white px-2 py-1 text-xs text-neutral-700"
-      >
-        <option value="">Map to recipe…</option>
-        {recipes.map((r) => (
-          <option key={r.id} value={r.id}>
-            {r.name}
-          </option>
-        ))}
-      </select>
+      <div className="min-w-[180px]">
+        <Combobox
+          name="recipe_id"
+          placeholder="Map to recipe…"
+          value={recipeId}
+          onChange={setRecipeId}
+          options={recipes.map((r) => ({
+            id: r.id,
+            label: r.name,
+            hint: `₹${r.selling_price}`,
+          }))}
+        />
+      </div>
       <button
         type="button"
         disabled={!recipeId || pending}
