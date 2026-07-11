@@ -14,6 +14,7 @@ import {
 import { formatDate } from "@/lib/format";
 import SectionHeader from "../../_components/SectionHeader";
 import StaffForm from "./StaffForm";
+import GetLinkButton from "./GetLinkButton";
 
 // Always render fresh — staff list reflects the latest invites.
 export const dynamic = "force-dynamic";
@@ -142,10 +143,13 @@ export default async function StaffPage() {
                         Active
                       </span>
                     ) : (
-                      <span className="inline-flex items-center gap-1.5 text-amber-700">
-                        <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
-                        Invited
-                      </span>
+                      <div className="space-y-1.5">
+                        <span className="inline-flex items-center gap-1.5 text-amber-700">
+                          <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
+                          Invited
+                        </span>
+                        <GetLinkButton email={member.email} />
+                      </div>
                     )}
                   </td>
                   <td className="px-5 py-3.5 text-neutral-600">

@@ -1,11 +1,44 @@
 "use client";
 
-import { useActionState, useEffect, useRef } from "react";
+import { useActionState, useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { type RoleId } from "@/lib/roles";
 import { inviteUser, type InviteState } from "./actions";
 
 const ease = [0.22, 1, 0.36, 1] as const;
+
+/** Copy/WhatsApp-able set-password link (email delivery needs custom SMTP). */
+export function InviteLinkBox({ link }: { link: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="space-y-2 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2.5">
+      <p className="text-xs font-semibold uppercase tracking-wider text-indigo-700">
+        Set-password link — share it directly
+      </p>
+      <p className="break-all font-mono text-[11px] leading-relaxed text-neutral-700">{link}</p>
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={() => {
+            void navigator.clipboard.writeText(link).then(() => setCopied(true));
+          }}
+          className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-indigo-500"
+        >
+          {copied ? "Copied ✓" : "Copy link"}
+        </button>
+        <a
+          href={`https://wa.me/?text=${encodeURIComponent(`Set up your Back-of-House account here: ${link}`)}`}
+          target="_blank"
+          rel="noreferrer"
+          className="rounded-lg border border-indigo-300 px-3 py-1.5 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-100"
+        >
+          WhatsApp
+        </a>
+      </div>
+      <p className="text-[11px] text-neutral-500">Single-use and expires — generate a fresh one from the staff list if needed.</p>
+    </div>
+  );
+}
 
 export default function StaffForm({
   assignableRoles,
@@ -110,6 +143,7 @@ export default function StaffForm({
             {state.success}
           </p>
         )}
+        {state?.link && <InviteLinkBox link={state.link} />}
 
         <div className="flex justify-end">
           <button
