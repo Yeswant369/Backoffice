@@ -5,6 +5,7 @@ import { normalizeRoles } from "@/lib/roles";
 import { getActiveLocation } from "@/lib/location";
 import Sidebar from "./Sidebar";
 import AskAiButton from "./_components/AskAiButton";
+import CommandPalette from "./_components/CommandPalette";
 
 /**
  * Authoritative dashboard guard. The Proxy performs an optimistic redirect, but
@@ -51,6 +52,7 @@ export default async function DashboardLayout({
       <main className="flex-1 overflow-y-auto">
         <div className="mx-auto max-w-6xl px-8 py-10">{children}</div>
       </main>
+      <CommandPalette roles={roles} />
       <AskAiButton />
     </div>
   );

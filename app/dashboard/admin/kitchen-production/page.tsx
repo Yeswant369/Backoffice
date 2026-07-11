@@ -8,6 +8,7 @@ import DishWorksheet, {
   type DishLite,
   type ExistingDishRow,
 } from "./DishWorksheet";
+import NewDepartmentButton from "./NewDepartmentButton";
 import SubRecipeWorksheet, {
   type SubLite,
   type ExistingSubRow,
@@ -279,6 +280,7 @@ export default async function KitchenProductionPage({
               {d.name}
             </Link>
           ))}
+          <NewDepartmentButton />
         </div>
 
         <form method="get" className="flex items-center gap-2">

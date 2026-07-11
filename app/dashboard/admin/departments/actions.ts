@@ -63,6 +63,8 @@ export async function createDepartment(
   }
 
   revalidatePath("/dashboard/admin/departments");
+  // The tabs row on Kitchen Production hosts an inline create — refresh it too.
+  revalidatePath("/dashboard/admin/kitchen-production");
   return { success: `Department "${name}" created.`, token: crypto.randomUUID() };
 }
 

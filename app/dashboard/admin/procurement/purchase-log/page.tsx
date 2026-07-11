@@ -51,6 +51,12 @@ export default async function PurchaseLogPage({
     qty: one(sp.qty),
     price: one(sp.rate),
   };
+  // Deep-link from universal search: ?bill=<uuid> filters the log to one bill.
+  const rawBill = one(sp.bill);
+  const billId =
+    rawBill && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawBill)
+      ? rawBill
+      : undefined;
 
   const supabase = await createClient();
 
@@ -73,15 +79,17 @@ export default async function PurchaseLogPage({
       .select("id, name, stock_unit, code")
       .eq("location_id", loc)
       .order("name"),
-    supabase
-      .from("inventory_ledger")
-      .select(
-        "id, created_at, transaction_date, quantity, unit_price, vendor_id, raw_material_id, raw_materials ( name, stock_unit ), vendors ( name ), purchase_bills ( invoice_no, bill_photo_path, delivery_photo_path )",
-      )
-      .eq("type", "PURCHASE")
-      .eq("location_id", loc)
-      .order("created_at", { ascending: false })
-      .limit(25),
+    (() => {
+      let pq = supabase
+        .from("inventory_ledger")
+        .select(
+          "id, created_at, transaction_date, quantity, unit_price, vendor_id, raw_material_id, raw_materials ( name, stock_unit ), vendors ( name ), purchase_bills ( invoice_no, bill_photo_path, delivery_photo_path )",
+        )
+        .eq("type", "PURCHASE")
+        .eq("location_id", loc);
+      if (billId) pq = pq.eq("bill_id", billId);
+      return pq.order("created_at", { ascending: false }).limit(billId ? 100 : 25);
+    })(),
     supabase
       .from("daily_purchases")
       .select("day, lines, bills, total")
@@ -136,12 +144,24 @@ export default async function PurchaseLogPage({
       />
 
       <div className="mt-8 overflow-hidden rounded-lg border border-[#e6e0d3] bg-[#f7f3ec]">
-        <div className="border-b border-[#e6e0d3] px-5 py-3">
-          <h3 className="text-sm font-semibold text-neutral-900">Recent purchases</h3>
+        <div className="flex items-center justify-between border-b border-[#e6e0d3] px-5 py-3">
+          <h3 className="text-sm font-semibold text-neutral-900">
+            {billId
+              ? `Bill ${purchases[0]?.purchase_bills?.invoice_no ?? "lines"}`
+              : "Recent purchases"}
+          </h3>
+          {billId && (
+            <Link
+              href="/dashboard/admin/procurement/purchase-log"
+              className="text-xs font-medium text-indigo-700 transition hover:text-indigo-500"
+            >
+              Show all purchases →
+            </Link>
+          )}
         </div>
         {purchases.length === 0 ? (
           <p className="px-5 py-8 text-center text-sm text-neutral-500">
-            No purchases yet.
+            {billId ? "No ledger lines found for that bill." : "No purchases yet."}
           </p>
         ) : (
           <table className="w-full text-left text-sm">
