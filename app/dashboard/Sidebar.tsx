@@ -144,7 +144,7 @@ export default function Sidebar({
   }
 
   return (
-    <aside className="flex h-dvh w-72 flex-shrink-0 flex-col border-r border-[#e6e0d3] bg-[#f7f3ec]">
+    <aside className="sticky top-0 flex h-dvh w-72 flex-shrink-0 flex-col border-r border-[#e6e0d3] bg-[#f7f3ec]">
       {/* Brand */}
       <div className="flex items-center gap-3 px-6 py-6">
         <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-indigo-300 bg-indigo-100">

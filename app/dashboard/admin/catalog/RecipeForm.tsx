@@ -67,6 +67,8 @@ interface Props {
   pending: boolean;
   /** Present = edit mode (submits recipe_id for updateRecipe). */
   initial?: RecipeFormInitial;
+  /** Managed cuisine list (categories kind=cuisine) — falls back to CUISINES. */
+  cuisines?: string[];
 }
 
 export default function RecipeForm({
@@ -76,7 +78,9 @@ export default function RecipeForm({
   formAction,
   pending,
   initial,
+  cuisines,
 }: Props) {
+  const cuisineOptions = cuisines && cuisines.length > 0 ? cuisines : CUISINES;
   // Seed rows use indices 0..n-1; the ref hands out keys AFTER that range and
   // is only touched in event handlers (never during render — lint rule).
   const nextKey = useRef((initial?.rows.length || 1) + 1);
@@ -211,7 +215,7 @@ export default function RecipeForm({
             className={inputCls}
           />
           <datalist id="cuisine-options">
-            {CUISINES.map((c) => (
+            {cuisineOptions.map((c) => (
               <option key={c} value={c} />
             ))}
           </datalist>

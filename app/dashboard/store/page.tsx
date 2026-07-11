@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import SectionHeader from "../_components/SectionHeader";
+import IndentRequestForm from "../_components/IndentRequestForm";
 import StoreDashboard from "./StoreDashboard";
 import type {
   DepartmentOption,
@@ -13,6 +14,10 @@ export const dynamic = "force-dynamic";
 export default async function StorePage() {
   const supabase = await createClient();
 
+  // Pin to HOME — RLS read-scope can span outlets for hybrid users.
+  const { data: home } = await supabase.rpc("current_location_id");
+  const loc = (home as string | null) ?? "";
+
   const [stockRes, vendorsRes, materialsRes, deptRes] = await Promise.all([
     supabase.from("live_stock").select("*").order("raw_material_name"),
     supabase
@@ -24,8 +29,13 @@ export default async function StorePage() {
       .select(
         "id, code, name, brand, purchase_unit, stock_unit, conversion_factor, vendor_id, category",
       )
+      .eq("location_id", loc)
       .order("name"),
-    supabase.from("departments").select("id, name").order("id"),
+    supabase
+      .from("departments")
+      .select("id, name")
+      .eq("location_id", loc)
+      .order("id"),
   ]);
 
   const stock = (stockRes.data ?? []) as LiveStockRow[];
@@ -64,6 +74,18 @@ export default async function StorePage() {
         departments={departments}
         storeDeptId={storeDeptId}
       />
+
+      <div className="mt-8">
+        <IndentRequestForm
+          departments={departments}
+          materials={materials.map((m) => ({
+            id: m.id,
+            name: m.name,
+            code: m.code,
+            stock_unit: m.stock_unit,
+          }))}
+        />
+      </div>
     </div>
   );
 }

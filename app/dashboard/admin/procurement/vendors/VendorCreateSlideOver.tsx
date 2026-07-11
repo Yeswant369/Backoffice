@@ -15,7 +15,16 @@ import { createVendor } from "../actions";
 
 const ease = [0.22, 1, 0.36, 1] as const;
 
-export default function VendorCreateSlideOver() {
+interface VendorCategory {
+  id: string;
+  name: string;
+}
+
+export default function VendorCreateSlideOver({
+  vendorCategories,
+}: {
+  vendorCategories: VendorCategory[];
+}) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState(false);
@@ -103,8 +112,12 @@ export default function VendorCreateSlideOver() {
                   Identity
                 </p>
                 <div className="grid gap-4 sm:grid-cols-2">
-                  <Field label="Vendor code">
-                    <input name="vendor_code" required placeholder="VND-001" className={inputCls} />
+                  <Field label="Vendor code" hint="leave blank to auto-number">
+                    <input
+                      name="vendor_code"
+                      placeholder="auto — e.g. TRM FOD01"
+                      className={inputCls}
+                    />
                   </Field>
                   <Field label="Name">
                     <input name="name" required placeholder="Fresh Farms" className={inputCls} />
@@ -113,7 +126,14 @@ export default function VendorCreateSlideOver() {
                     <input name="nature_of_supply" placeholder="Vegetables" className={inputCls} />
                   </Field>
                   <Field label="Category" hint="Optional">
-                    <input name="category" placeholder="Perishables" className={inputCls} />
+                    <select name="category_id" defaultValue="" className={inputCls}>
+                      <option value="">— None —</option>
+                      {vendorCategories.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name}
+                        </option>
+                      ))}
+                    </select>
                   </Field>
                   <Field label="Contact person" hint="Optional">
                     <input name="contact_person" className={inputCls} />

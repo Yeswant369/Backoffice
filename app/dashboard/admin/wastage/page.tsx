@@ -2,7 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { isAdmin } from "@/lib/auth";
-import { formatDate } from "@/lib/format";
+import { formatDate, inr } from "@/lib/format";
 import SectionHeader from "../../_components/SectionHeader";
 import WastageForm from "./WastageForm";
 
@@ -18,6 +18,19 @@ interface WastageRow {
   raw_materials: { name: string; stock_unit: string } | null;
 }
 
+interface DeptWastageRow {
+  department_name: string | null;
+  day: string;
+  wastage_value: number;
+}
+
+/** IST calendar date (YYYY-MM-DD) `days` days before now (evaluated per request). */
+function istDateDaysAgo(days: number): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+  }).format(new Date(Date.now() - days * 86400000));
+}
+
 export default async function WastagePage() {
   if (!(await isAdmin())) redirect("/dashboard");
   const supabase = await createClient();
@@ -26,7 +39,10 @@ export default async function WastagePage() {
   const { data: home } = await supabase.rpc("current_location_id");
   const loc = (home as string | null) ?? "";
 
-  const [deptRes, materialsRes, ledgerRes] = await Promise.all([
+  // Last 30 days (IST) window for the department wastage leaderboard.
+  const thirtyAgo = istDateDaysAgo(30);
+
+  const [deptRes, materialsRes, ledgerRes, deptWastageRes] = await Promise.all([
     supabase
       .from("departments")
       .select("id, name")
@@ -46,6 +62,13 @@ export default async function WastagePage() {
       .eq("location_id", loc)
       .order("created_at", { ascending: false })
       .limit(25),
+    supabase
+      .from("department_daily_stock")
+      .select("department_name, day, wastage_value")
+      .eq("location_id", loc)
+      .gt("wastage_value", 0)
+      .gte("day", thirtyAgo)
+      .order("wastage_value", { ascending: false }),
   ]);
 
   const departments = (deptRes.data ?? []) as { id: number; name: string }[];
@@ -57,6 +80,33 @@ export default async function WastagePage() {
   }[];
   const rows = (ledgerRes.data ?? []) as unknown as WastageRow[];
   const deptName = new Map(departments.map((d) => [d.id, d.name]));
+  const deptWastage = (deptWastageRes.data ?? []) as DeptWastageRow[];
+
+  // Aggregate the day-grain rows per department: 30-day total + the worst day.
+  const byDept = new Map<
+    string,
+    { department_name: string; total: number; worstDay: string; worstValue: number }
+  >();
+  for (const r of deptWastage) {
+    const name = r.department_name ?? "—";
+    const value = Number(r.wastage_value);
+    const cur = byDept.get(name);
+    if (!cur) {
+      byDept.set(name, {
+        department_name: name,
+        total: value,
+        worstDay: r.day,
+        worstValue: value,
+      });
+    } else {
+      cur.total += value;
+      if (value > cur.worstValue) {
+        cur.worstValue = value;
+        cur.worstDay = r.day;
+      }
+    }
+  }
+  const deptLeaderboard = [...byDept.values()].sort((a, b) => b.total - a.total);
 
   return (
     <div>
@@ -77,6 +127,42 @@ export default async function WastagePage() {
       <div className="mb-8">
         <WastageForm departments={departments} materials={materials} />
       </div>
+
+      {deptLeaderboard.length > 0 && (
+        <div className="mb-8 overflow-hidden rounded-lg border border-[#e6e0d3] bg-[#f7f3ec]">
+          <div className="border-b border-[#e6e0d3] px-5 py-3">
+            <h3 className="text-sm font-semibold text-neutral-900">
+              Highest wastage by department (30d)
+            </h3>
+          </div>
+          <table className="w-full text-left text-sm">
+            <thead>
+              <tr className="text-[11px] uppercase tracking-wider text-neutral-500">
+                <th className="px-5 py-2.5 font-medium">Department</th>
+                <th className="px-5 py-2.5 text-right font-medium">
+                  Total wastage (30d)
+                </th>
+                <th className="px-5 py-2.5 text-right font-medium">Worst day</th>
+              </tr>
+            </thead>
+            <tbody>
+              {deptLeaderboard.map((r) => (
+                <tr key={r.department_name} className="border-t border-[#e6e0d3]">
+                  <td className="px-5 py-2.5 font-medium text-neutral-900">
+                    {r.department_name}
+                  </td>
+                  <td className="px-5 py-2.5 text-right tabular-nums text-neutral-700">
+                    {inr(r.total)}
+                  </td>
+                  <td className="px-5 py-2.5 text-right tabular-nums text-neutral-700">
+                    {formatDate(r.worstDay)} · {inr(r.worstValue)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       <div className="overflow-hidden rounded-lg border border-[#e6e0d3] bg-[#f7f3ec]">
         {rows.length === 0 ? (

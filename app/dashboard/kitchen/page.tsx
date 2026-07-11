@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import SectionHeader from "../_components/SectionHeader";
+import IndentRequestForm from "../_components/IndentRequestForm";
 import KitchenDashboard from "./KitchenDashboard";
 import type { LiveStockRow, RawMaterialOption, RecipeOption } from "./types";
 
@@ -7,6 +8,10 @@ export const dynamic = "force-dynamic";
 
 export default async function KitchenPage() {
   const supabase = await createClient();
+
+  // Pin to HOME — RLS read-scope can span outlets for hybrid users.
+  const { data: home } = await supabase.rpc("current_location_id");
+  const loc = (home as string | null) ?? "";
 
   const [stockRes, recipesRes, materialsRes, deptRes] = await Promise.all([
     supabase.from("live_stock").select("*").order("raw_material_name"),
@@ -21,8 +26,9 @@ export default async function KitchenPage() {
       .select(
         "id, code, name, brand, purchase_unit, stock_unit, conversion_factor, vendor_id, category",
       )
+      .eq("location_id", loc)
       .order("name"),
-    supabase.from("departments").select("id, name"),
+    supabase.from("departments").select("id, name").eq("location_id", loc),
   ]);
 
   const stock = (stockRes.data ?? []) as LiveStockRow[];
@@ -30,8 +36,11 @@ export default async function KitchenPage() {
   const materials = (materialsRes.data ?? []) as RawMaterialOption[];
   const departments = (deptRes.data ?? []) as { id: number; name: string }[];
 
-  const kitchenDeptId =
-    departments.find((d) => d.name.toLowerCase() === "kitchen")?.id ?? 2;
+  // No numeric fallback — a wrong guess would post to another department.
+  // When unresolved, IndentRequestForm falls back to its department select.
+  const kitchenDeptId = departments.find(
+    (d) => d.name.trim().toLowerCase() === "kitchen",
+  )?.id;
 
   const loadError =
     stockRes.error || recipesRes.error || materialsRes.error || deptRes.error;
@@ -55,8 +64,21 @@ export default async function KitchenPage() {
         initialStock={stock}
         recipes={recipes}
         materials={materials}
-        kitchenDeptId={kitchenDeptId}
+        kitchenDeptId={kitchenDeptId ?? -1}
       />
+
+      <div className="mt-8">
+        <IndentRequestForm
+          departments={departments}
+          materials={materials.map((m) => ({
+            id: m.id,
+            name: m.name,
+            code: m.code,
+            stock_unit: m.stock_unit,
+          }))}
+          fixedDepartmentId={kitchenDeptId}
+        />
+      </div>
     </div>
   );
 }

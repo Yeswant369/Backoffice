@@ -34,7 +34,7 @@ export default async function RecipeDetailPage({
   const loc = (home as string | null) ?? "";
   if (!loc) notFound();
 
-  const [recipeRes, ingRes, matRes, wacRes, costingRes, deptRes] =
+  const [recipeRes, ingRes, matRes, wacRes, costingRes, deptRes, cuisineRes] =
     await Promise.all([
       supabase
         .from("recipes")
@@ -66,6 +66,13 @@ export default async function RecipeDetailPage({
         .from("departments")
         .select("id, name")
         .eq("location_id", loc)
+        .order("name"),
+      // Managed cuisine list → datalist suggestions in the edit form.
+      supabase
+        .from("categories")
+        .select("name")
+        .eq("location_id", loc)
+        .eq("kind", "cuisine")
         .order("name"),
     ]);
 
@@ -176,6 +183,7 @@ export default async function RecipeDetailPage({
         materials={materials}
         subRecipes={subRecipes}
         departments={(deptRes.data ?? []) as { id: number; name: string }[]}
+        cuisines={(cuisineRes.data ?? []).map((c) => c.name as string)}
         initial={initial}
       />
     </div>

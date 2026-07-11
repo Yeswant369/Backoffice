@@ -16,11 +16,14 @@ export default function RecipeEditor({
   materials,
   subRecipes,
   departments,
+  cuisines,
   initial,
 }: {
   materials: MaterialOption[];
   subRecipes: SubRecipeOption[];
   departments: { id: number; name: string }[];
+  /** Managed cuisine names (categories kind=cuisine) for the datalist. */
+  cuisines?: string[];
   initial: RecipeFormInitial;
 }) {
   const [state, formAction, pending] = useActionState<
@@ -50,6 +53,7 @@ export default function RecipeEditor({
         materials={materials}
         subRecipes={subRecipes}
         departments={departments}
+        cuisines={cuisines}
         formAction={formAction}
         pending={pending}
         initial={initial}

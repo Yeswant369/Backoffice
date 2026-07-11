@@ -20,11 +20,20 @@ export interface MaterialRow {
   stock_unit: string;
   conversion_factor: number;
   par_level: number;
+  /** "INGREDIENT" | "OPERATIONAL" — drives the catalog split tabs. */
+  material_type: string;
   category: string | null;
+  category_id: string | null;
   vendor_id: string | null;
   vendor_name: string | null;
   weighted_avg_cost: number;
   needs_review: boolean;
+}
+
+/** A managed category (materials / vendors / cuisines) for pickers. */
+export interface CategoryOption {
+  id: string;
+  name: string;
 }
 
 export interface RecipeRow {

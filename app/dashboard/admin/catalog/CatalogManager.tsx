@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import MaterialPanel from "./MaterialPanel";
 import RecipePanel from "./RecipePanel";
-import type { MaterialRow, RecipeRow, VendorRow } from "./types";
+import type { CategoryOption, MaterialRow, RecipeRow, VendorRow } from "./types";
 
 const ease = [0.22, 1, 0.36, 1] as const;
 
@@ -22,6 +22,11 @@ interface Props {
   /** Per-recipe plate cost (recipe_cogs) — powers sub-recipe line pricing. */
   recipeUnitCosts: Record<string, number>;
   departments: { id: number; name: string }[];
+  /** Managed categories, home-pinned. Vendor/cuisine lists are threaded for
+      the panels that consume them. */
+  materialCategories: CategoryOption[];
+  vendorCategories: CategoryOption[];
+  cuisineCategories: CategoryOption[];
   sheetUrl: string;
   connected: boolean;
   initialTab?: TabKey;
@@ -33,6 +38,8 @@ export default function CatalogManager({
   recipes,
   recipeUnitCosts,
   departments,
+  materialCategories,
+  cuisineCategories,
   sheetUrl,
   connected,
   initialTab,
@@ -95,6 +102,7 @@ export default function CatalogManager({
               <MaterialPanel
                 materials={materials}
                 vendors={vendorOptions}
+                materialCategories={materialCategories}
                 connected={connected}
                 sheetUrl={sheetUrl}
               />
@@ -109,6 +117,7 @@ export default function CatalogManager({
                   unit_cost: recipeUnitCosts[r.id] ?? 0,
                 }))}
                 departments={departments}
+                cuisineCategories={cuisineCategories}
                 sheetUrl={sheetUrl}
                 connected={connected}
               />

@@ -88,8 +88,20 @@ export default async function PosSalesPage({
         title="POS Sales"
         description="Petpooja orders — daily sales, GST, channel mix (Swiggy / Zomato / Dine-in) net of commission, dayparts and item profitability."
       />
-      <div className="mb-6 mt-4">
+      <div className="mb-6 mt-4 flex flex-wrap items-center gap-x-4 gap-y-2">
         <DateRangeUrlControl from={from} to={to} />
+        <a
+          href={`/api/reports/export?type=pos_daily&from=${from}&to=${to}`}
+          className="text-sm font-medium text-indigo-700 transition hover:text-indigo-500"
+        >
+          ⤓ Export CSV (daily)
+        </a>
+        <a
+          href={`/api/reports/export?type=pos_items&from=${from}&to=${to}`}
+          className="text-sm font-medium text-indigo-700 transition hover:text-indigo-500"
+        >
+          ⤓ Export CSV (items)
+        </a>
       </div>
 
       {empty ? (

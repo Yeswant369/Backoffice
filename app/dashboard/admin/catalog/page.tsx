@@ -3,7 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { isAdmin } from "@/lib/auth";
 import SectionHeader from "../../_components/SectionHeader";
 import CatalogManager from "./CatalogManager";
-import type { MaterialRow, RecipeRow, VendorRow } from "./types";
+import type { CategoryOption, MaterialRow, RecipeRow, VendorRow } from "./types";
 
 export const dynamic = "force-dynamic";
 
@@ -30,8 +30,16 @@ export default async function CatalogPage({
   const { data: homeLoc } = await supabase.rpc("current_location_id");
   const home = (homeLoc as string | null) ?? "";
 
-  const [vendorRes, matRes, recipeRes, wacRes, costingRes, locRes, deptRes] =
-    await Promise.all([
+  const [
+    vendorRes,
+    matRes,
+    recipeRes,
+    wacRes,
+    costingRes,
+    locRes,
+    deptRes,
+    catRes,
+  ] = await Promise.all([
     supabase
       .from("vendors")
       .select(
@@ -42,7 +50,7 @@ export default async function CatalogPage({
     supabase
       .from("raw_materials")
       .select(
-        "id, name, code, brand, purchase_unit, stock_unit, conversion_factor, par_level, category, vendor_id, needs_review, vendors ( name )",
+        "id, name, code, brand, purchase_unit, stock_unit, conversion_factor, par_level, material_type, category, category_id, vendor_id, needs_review, vendors ( name )",
       )
       .eq("location_id", home)
       .order("name"),
@@ -73,7 +81,25 @@ export default async function CatalogPage({
       .select("id, name")
       .eq("location_id", home)
       .order("name"),
+    supabase
+      .from("categories")
+      .select("id, kind, name")
+      .eq("location_id", home)
+      .order("name"),
   ]);
+
+  const allCategories = (catRes.data ?? []) as {
+    id: string;
+    kind: string;
+    name: string;
+  }[];
+  const byKind = (kind: string): CategoryOption[] =>
+    allCategories
+      .filter((c) => c.kind === kind)
+      .map((c) => ({ id: c.id, name: c.name }));
+  const materialCategories = byKind("material");
+  const vendorCategories = byKind("vendor");
+  const cuisineCategories = byKind("cuisine");
 
   const departments = (deptRes.data ?? []) as { id: number; name: string }[];
 
@@ -102,7 +128,9 @@ export default async function CatalogPage({
       stock_unit: m.stock_unit,
       conversion_factor: Number(m.conversion_factor),
       par_level: Number(m.par_level),
+      material_type: (m.material_type as string) ?? "INGREDIENT",
       category: m.category,
+      category_id: (m.category_id as string | null) ?? null,
       vendor_id: m.vendor_id,
       vendor_name: vendor?.name ?? null,
       weighted_avg_cost: wacByMaterial.get(m.id) ?? 0,
@@ -155,6 +183,9 @@ export default async function CatalogPage({
           (costingRes.data ?? []).map((c) => [c.recipe_id as string, Number(c.cogs ?? 0)]),
         )}
         departments={departments}
+        materialCategories={materialCategories}
+        vendorCategories={vendorCategories}
+        cuisineCategories={cuisineCategories}
         sheetUrl={sheetUrl}
         connected={connected}
       />

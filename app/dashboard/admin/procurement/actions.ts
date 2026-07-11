@@ -29,24 +29,60 @@ export async function createVendor(
 ): Promise<ActionState> {
   if (!(await isAdmin())) return { error: "Only administrators can add vendors." };
 
-  const vendor_code = str(fd, "vendor_code");
+  let vendor_code = str(fd, "vendor_code");
   const name = str(fd, "name");
-  if (!vendor_code) return { error: "Vendor code is required." };
   if (!name) return { error: "Name is required." };
 
   const supabase = await createClient();
   const loc = await locationId(supabase);
   if (!loc) return { error: "Your account isn't assigned to a location." };
 
+  // Managed vendor category (text kept in sync for existing views/sheets).
+  const category_id = orNull(str(fd, "category_id"));
+  let categoryText = orNull(str(fd, "category"));
+  if (category_id) {
+    const { data: cat } = await supabase
+      .from("categories")
+      .select("id, name")
+      .eq("id", category_id)
+      .eq("location_id", loc)
+      .eq("kind", "vendor")
+      .maybeSingle();
+    if (!cat) return { error: "Vendor category not found in your location." };
+    categoryText = cat.name as string;
+  }
+
+  // Auto-code when blank: "<ORG3> <CAT3>NN" (e.g. "TRM FOD01") — org initials +
+  // category prefix + 2-digit sequence within that prefix.
+  if (!vendor_code) {
+    const { data: locRow } = await supabase
+      .from("locations")
+      .select("organization_id, organizations ( name )")
+      .eq("id", loc)
+      .maybeSingle();
+    const orgName =
+      ((locRow?.organizations as unknown as { name?: string } | null)?.name ?? "ORG");
+    const org3 = orgName.replace(/[^A-Za-z0-9]/g, "").slice(0, 3).toUpperCase() || "ORG";
+    const cat3 = (categoryText ?? "GEN").replace(/[^A-Za-z0-9]/g, "").slice(0, 3).toUpperCase() || "GEN";
+    const stem = `${org3} ${cat3}`;
+    const { count } = await supabase
+      .from("vendors")
+      .select("id", { count: "exact", head: true })
+      .eq("location_id", loc)
+      .like("vendor_code", `${stem}%`);
+    vendor_code = `${stem}${String((count ?? 0) + 1).padStart(2, "0")}`;
+  }
+
   const { error } = await supabase.from("vendors").insert({
     vendor_code,
     name,
+    category_id,
     nature_of_supply: orNull(str(fd, "nature_of_supply")),
     contact_person: orNull(str(fd, "contact_person")),
     phone: orNull(str(fd, "phone")),
     alt_phone: orNull(str(fd, "alt_phone")),
     email: orNull(str(fd, "email")),
-    category: orNull(str(fd, "category")),
+    category: categoryText,
     bank_name: orNull(str(fd, "bank_name")),
     account_number: orNull(str(fd, "account_number")),
     ifsc_code: orNull(str(fd, "ifsc_code")),
@@ -64,13 +100,13 @@ export async function createVendor(
     return {
       error:
         error.code === "23505"
-          ? `Vendor code "${vendor_code}" already exists.`
+          ? `Vendor code "${vendor_code}" already exists — pick another or leave it blank to auto-number again.`
           : error.message,
     };
   }
 
   revalidatePath("/dashboard/admin/procurement/vendors");
-  return { success: `Vendor "${name}" created.`, token: crypto.randomUUID() };
+  return { success: `Vendor "${name}" created (code ${vendor_code}).`, token: crypto.randomUUID() };
 }
 
 /**

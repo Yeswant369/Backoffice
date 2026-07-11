@@ -7,6 +7,7 @@ import { inr } from "@/lib/format";
 import { triggerSheetSync } from "@/lib/sheet-sync-client";
 import { FormFeedback, type Feedback } from "../../_components/forms";
 import { createRecipe, deleteRecipe, type CatalogState } from "./actions";
+import CategoryManager from "./CategoryManager";
 import DeleteButton from "./DeleteButton";
 import RecipeForm, { type SubRecipeOption } from "./RecipeForm";
 import RecipesWorkspace from "./RecipesWorkspace";
@@ -18,6 +19,8 @@ interface Props {
   materials: MaterialOption[];
   subRecipes: SubRecipeOption[];
   departments: { id: number; name: string }[];
+  /** Managed cuisine list (categories kind=cuisine) for the form + manager. */
+  cuisineCategories: { id: string; name: string }[];
   sheetUrl: string;
   connected: boolean;
 }
@@ -27,6 +30,7 @@ export default function RecipePanel({
   materials,
   subRecipes,
   departments,
+  cuisineCategories,
   sheetUrl,
   connected,
 }: Props) {
@@ -105,10 +109,17 @@ export default function RecipePanel({
         materials={materials}
         subRecipes={subRecipes}
         departments={departments}
+        cuisines={cuisineCategories.map((c) => c.name)}
         formAction={formAction}
         pending={pending}
       />
       <FormFeedback feedback={feedback} />
+
+      <CategoryManager
+        kind="cuisine"
+        categories={cuisineCategories}
+        title="Cuisines"
+      />
 
       <div className="overflow-hidden rounded-lg border border-[#e6e0d3] bg-[#f7f3ec]">
         <div className="space-y-2 border-b border-[#e6e0d3] px-5 py-3">

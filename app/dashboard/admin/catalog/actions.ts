@@ -400,23 +400,43 @@ export async function createRawMaterial(
   if (par_level < 0) return { error: "Par level cannot be negative." };
 
   const supabase = await createClient();
+  const locationId = await currentLocationId(supabase);
+  if (!locationId) return { error: "Your account isn't assigned to a location." };
 
   // Material code: typed, or auto-generated next RM-#### for this outlet.
   let code = str(fd, "code");
   if (!code) {
-    const locationId = await currentLocationId(supabase);
     code = await nextMaterialCode(supabase, locationId);
+  }
+
+  // Ingredients | Operational split + managed category (text kept in sync so
+  // every existing view/report/sheet keeps working).
+  const material_type = str(fd, "material_type") === "OPERATIONAL" ? "OPERATIONAL" : "INGREDIENT";
+  const category_id = orNull(str(fd, "category_id"));
+  let categoryText = orNull(str(fd, "category"));
+  if (category_id) {
+    const { data: cat } = await supabase
+      .from("categories")
+      .select("id, name")
+      .eq("id", category_id)
+      .eq("location_id", locationId)
+      .eq("kind", "material")
+      .maybeSingle();
+    if (!cat) return { error: "Category not found in your location." };
+    categoryText = cat.name as string;
   }
 
   const { error } = await supabase.from("raw_materials").insert({
     name,
     code: orNull(code),
+    material_type,
+    category_id,
     brand: orNull(str(fd, "brand")),
     purchase_unit,
     stock_unit,
     conversion_factor,
     par_level,
-    category: orNull(str(fd, "category")),
+    category: categoryText,
     vendor_id: orNull(str(fd, "vendor_id")),
   });
 
@@ -431,6 +451,64 @@ export async function createRawMaterial(
 
   revalidatePath("/dashboard/admin/catalog");
   return { success: `Material "${name}" created.`, token: crypto.randomUUID() };
+}
+
+/**
+ * Re-classify an existing material: Ingredient ↔ Operational and/or its managed
+ * category. An empty category_id only changes the type (the category text and
+ * category_id are left untouched); a set category_id also syncs the legacy
+ * `category` text so every existing view/report/sheet keeps working.
+ */
+export async function updateMaterialClassification(
+  material_id: string,
+  material_type: string,
+  category_id: string,
+): Promise<CatalogState> {
+  const denied = await guard();
+  if (denied) return { error: denied };
+
+  if (!material_id) return { error: "Missing material." };
+  const type = material_type === "OPERATIONAL" ? "OPERATIONAL" : "INGREDIENT";
+
+  const supabase = await createClient();
+  const home = await currentLocationId(supabase);
+  if (!home) return { error: "Your account isn't assigned to a location." };
+
+  const { data: mat } = await supabase
+    .from("raw_materials")
+    .select("id")
+    .eq("id", material_id)
+    .eq("location_id", home)
+    .maybeSingle();
+  if (!mat) return { error: "Material not found in your location." };
+
+  const patch: Record<string, unknown> = { material_type: type };
+  if (category_id) {
+    const { data: cat } = await supabase
+      .from("categories")
+      .select("id, name")
+      .eq("id", category_id)
+      .eq("location_id", home)
+      .eq("kind", "material")
+      .maybeSingle();
+    if (!cat) return { error: "Category not found in your location." };
+    patch.category_id = category_id;
+    patch.category = cat.name as string;
+  }
+
+  const { data: updated, error } = await supabase
+    .from("raw_materials")
+    .update(patch)
+    .eq("id", material_id)
+    .eq("location_id", home)
+    .select("id");
+  if (error) return { error: error.message };
+  if (!updated || updated.length === 0) {
+    return { error: "Material not found in your location." };
+  }
+
+  revalidatePath("/dashboard/admin/catalog");
+  return { success: "Material updated.", token: crypto.randomUUID() };
 }
 
 /** Next RM-#### after the highest already assigned in this outlet. */

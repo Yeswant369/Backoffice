@@ -39,7 +39,7 @@ export default async function DashboardLayout({
     <div className="flex min-h-dvh bg-white text-neutral-900">
       {/* Sidebar reads useSearchParams (catalog ?tab= active state) — a Suspense
           boundary keeps any static page under this layout prerenderable. */}
-      <Suspense fallback={<div className="w-72 flex-shrink-0 border-r border-[#e6e0d3] bg-[#f7f3ec]" />}>
+      <Suspense fallback={<div className="sticky top-0 h-dvh w-72 flex-shrink-0 border-r border-[#e6e0d3] bg-[#f7f3ec]" />}>
         <Sidebar
           roles={roles}
           fullName={fullName}

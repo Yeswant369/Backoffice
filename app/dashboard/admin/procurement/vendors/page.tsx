@@ -6,6 +6,7 @@ import { inr } from "@/lib/format";
 import SectionHeader from "../../../_components/SectionHeader";
 import VendorCreateSlideOver from "./VendorCreateSlideOver";
 import ApproveVendorButton from "./ApproveVendorButton";
+import CategoryManager from "../../catalog/CategoryManager";
 
 export const dynamic = "force-dynamic";
 
@@ -20,18 +21,31 @@ interface VendorRow {
   status: string;
   outstanding: number;
   total_paid_mtd: number;
+  category: string | null;
+  category_id: string | null;
 }
 
-export default async function ProcurementVendorsPage() {
+interface Category {
+  id: string;
+  name: string;
+}
+
+export default async function ProcurementVendorsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
+}) {
   if (!(await isAdmin())) redirect("/dashboard");
   const supabase = await createClient();
+  const cat = (await searchParams).cat;
+  const activeCat = typeof cat === "string" ? cat : "";
 
   // Pin to HOME — RLS read-scope spans the org for hybrid Admin+Owner users, so
   // this keeps the screen consistent with what mirrors to the sheet (home only).
   // vendor_master = vendors + auto stats (outstanding, paid MTD) — nothing typed.
   const { data: home } = await supabase.rpc("current_location_id");
   const loc = (home as string | null) ?? "";
-  const [{ data }, { data: appr }] = await Promise.all([
+  const [{ data }, { data: appr }, { data: cats }] = await Promise.all([
     supabase
       .from("vendor_master")
       .select(
@@ -39,13 +53,47 @@ export default async function ProcurementVendorsPage() {
       )
       .eq("location_id", loc)
       .order("name"),
-    supabase.from("vendors").select("id, approved").eq("location_id", loc),
+    supabase
+      .from("vendors")
+      .select("id, approved, category, category_id")
+      .eq("location_id", loc),
+    supabase
+      .from("categories")
+      .select("id, name")
+      .eq("location_id", loc)
+      .eq("kind", "vendor")
+      .order("name"),
   ]);
-  const vendors = (data ?? []) as VendorRow[];
-  // Approval status ("fixed unless added & approved") merged in by id.
+  const categories = (cats ?? []) as Category[];
+  // Approval status ("fixed unless added & approved") + managed category,
+  // merged in by id (vendor_master view doesn't carry these).
   const approvedMap = new Map(
     (appr ?? []).map((a) => [a.id as string, a.approved as boolean]),
   );
+  const catMap = new Map(
+    (appr ?? []).map((a) => [
+      a.id as string,
+      { category: a.category as string | null, category_id: a.category_id as string | null },
+    ]),
+  );
+  const allVendors: VendorRow[] = ((data ?? []) as Omit<VendorRow, "category" | "category_id">[]).map(
+    (v) => ({
+      ...v,
+      category: catMap.get(v.id)?.category ?? null,
+      category_id: catMap.get(v.id)?.category_id ?? null,
+    }),
+  );
+  const vendors =
+    activeCat === ""
+      ? allVendors
+      : activeCat === "none"
+        ? allVendors.filter((v) => !v.category_id)
+        : allVendors.filter((v) => v.category_id === activeCat);
+
+  const pillCls = (active: boolean) =>
+    `rounded-md px-3 py-1.5 text-xs font-medium transition ${
+      active ? "bg-white text-neutral-900 shadow-sm" : "text-neutral-600 hover:text-neutral-900"
+    }`;
 
   return (
     <div>
@@ -63,7 +111,28 @@ export default async function ProcurementVendorsPage() {
           title="Vendor Hub"
           description="Manage suppliers. New vendors mirror to the Vendor Master sheet automatically; outstanding and paid-to-date are computed live."
         />
-        <VendorCreateSlideOver />
+        <VendorCreateSlideOver vendorCategories={categories} />
+      </div>
+
+      <div className="mb-4 inline-flex gap-1 rounded-lg bg-[#efe9dd] p-1">
+        <Link href="/dashboard/admin/procurement/vendors" className={pillCls(activeCat === "")}>
+          All
+        </Link>
+        {categories.map((c) => (
+          <Link
+            key={c.id}
+            href={`/dashboard/admin/procurement/vendors?cat=${c.id}`}
+            className={pillCls(activeCat === c.id)}
+          >
+            {c.name}
+          </Link>
+        ))}
+        <Link
+          href="/dashboard/admin/procurement/vendors?cat=none"
+          className={pillCls(activeCat === "none")}
+        >
+          Uncategorised
+        </Link>
       </div>
 
       <div className="overflow-hidden rounded-lg border border-[#e6e0d3] bg-[#f7f3ec]">
@@ -82,6 +151,7 @@ export default async function ProcurementVendorsPage() {
               <tr className="text-[11px] uppercase tracking-wider text-neutral-500">
                 <th className="px-5 py-3 font-medium">Code</th>
                 <th className="px-5 py-3 font-medium">Name</th>
+                <th className="px-5 py-3 font-medium">Category</th>
                 <th className="px-5 py-3 font-medium">Contact</th>
                 <th className="px-5 py-3 text-right font-medium">Paid (MTD)</th>
                 <th className="px-5 py-3 text-right font-medium">Outstanding</th>
@@ -107,6 +177,7 @@ export default async function ProcurementVendorsPage() {
                       {v.name}
                     </Link>
                   </td>
+                  <td className="px-5 py-3.5 text-neutral-600">{v.category ?? "—"}</td>
                   <td className="px-5 py-3.5 text-neutral-600">
                     {v.contact_person ?? "—"}
                     {v.phone && (
@@ -157,6 +228,10 @@ export default async function ProcurementVendorsPage() {
             </tbody>
           </table>
         )}
+      </div>
+
+      <div className="mt-6">
+        <CategoryManager kind="vendor" categories={categories} title="Vendor categories" />
       </div>
     </div>
   );
